@@ -5,4 +5,5 @@ langchain
 langchain-community
 chromadb
 gradio
+pypdf
 jupyterlab 

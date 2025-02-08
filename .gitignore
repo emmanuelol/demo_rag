@@ -1,0 +1,4 @@
+*.bin
+*.sqlite3
+*.pickle
+chroma_db/

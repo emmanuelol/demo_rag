@@ -38,6 +38,7 @@ docker run --name $container_name -d -it --rm --privileged \
 -v $dir_path:/app $image_name bash
 
 VAR1='jupyter lab --allow-root --no-browser --port='
+
 cmd="${VAR1}${port}"
-#docker exec -it $container_name bash -c "$cmd"
-docker exec -it $container_name bash
+docker exec -it $container_name bash -c "$cmd"
+#docker exec -it $container_name bash
