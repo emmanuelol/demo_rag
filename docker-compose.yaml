@@ -1,0 +1,26 @@
+services:
+  ollama:
+    image: ollama/ollama
+    container_name: ollama # Sets the container name to ollama
+    ports:
+      - "11434:11434" # Maps port 11434 on the host to port 11434 in the container
+    environment:
+      - OLLAMA_HOST=127.0.0.1:11435
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia # Specifies the driver to use for GPU
+              count: 1 # Reserves 1 GPU
+              capabilities: [gpu] # Specifies that the device capability is GPU
+    command: bash -c 'ollama pull deepseek-r1:1.5b && ollama serve'
+  client:
+    build:
+      context: ./app # Specifies the build context as the ./app directory
+      dockerfile: Dockerfile # Uses the Dockerfile in the build context
+    depends_on:
+      - ollama
+    command: ["python", "run_rag.py"]
+
+
+
