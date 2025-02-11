@@ -4,8 +4,11 @@ services:
     container_name: ollama # Sets the container name to ollama
     ports:
       - "11434:11434" # Maps port 11434 on the host to port 11434 in the container
-    environment:
-      - OLLAMA_HOST=127.0.0.1:11435
+    #  - "11435:11435"
+    #environment:
+    #  - OLLAMA_HOST=127.0.0.1:11435
+    volumes:
+      - ./entrypoint.sh:/entrypoint.sh
     deploy:
       resources:
         reservations:
@@ -13,14 +16,35 @@ services:
             - driver: nvidia # Specifies the driver to use for GPU
               count: 1 # Reserves 1 GPU
               capabilities: [gpu] # Specifies that the device capability is GPU
-    command: bash -c 'ollama pull deepseek-r1:1.5b && ollama serve'
+    #command: 'ollama pull deepseek-r1:1.5b && ollama serve'
+    tty: true
+    entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
   client:
     build:
-      context: ./app # Specifies the build context as the ./app directory
+      context: ./client # Specifies the build context as the ./app directory
       dockerfile: Dockerfile # Uses the Dockerfile in the build context
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /media/Datos/datasets:/datasets
+      - /media/Datos/models:/models
+    environment:
+      BASE_URL: http://ollama:11434
+    ports:
+      - "8501:8501"
     depends_on:
       - ollama
+    tty: true 
+    entrypoint: /bin/sh
     command: ["python", "run_rag.py"]
+    #healthcheck:
+    #    test: ["CMD", "curl", "-f", "http://localhost:11435"]
+    #    interval: 30s
+    #    timeout: 10s
+    #    retries: 5
+    
+    
+
 
 
 

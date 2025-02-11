@@ -1,3 +1,50 @@
 ollama pull deepseek-r1:1.5b
 ollama run deepseek-r1:1.5b
 ollama serve
+
+curl http://localhost:11434/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+curl http://localhost:11435/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+
+
+curl http://0.0.0.0:11434/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+curl http://0.0.0.0:11435/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+
+curl http://127.0.0.1:11434/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+curl http://127.0.0.1:11435/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+
+curl ${BASE_URL}/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
