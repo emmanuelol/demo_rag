@@ -8,7 +8,9 @@ from langchain.vectorstores import Chroma
 #from lanngchain_community.emmbiddings import Chroma
 #from langchain_community.embeddings import OllamaEmbeddings
 from langchain_ollama.embeddings import OllamaEmbeddings
-import ollama
+from langchain_ollama import ChatOllama
+from ollama import ChatResponse, chat, Client
+#import ollama
 import re
 import os
 import yaml
@@ -20,18 +22,15 @@ def process_pdf(pdf_bytes, model_embedding, persist_directory,chunk_size,chunk_o
         return None, None, None
 
     base_url = 'http://ollama:11434'
-    print(base_url)
-    print(pdf_bytes)
     #loader = PyMuPDFLoader(pdf_bytes)
 
-    loader = PyPDFDirectoryLoader(path = pdf_bytes,glob = "**/[!.]*.pdf")
+    loader = PyPDFDirectoryLoader(path = pdf_bytes)
     data = loader.load()
     #print(loader)
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size, chunk_overlap=chunk_overlap
     )
     chunks = text_splitter.split_documents(data)
-    print(chunks)
     embeddings = OllamaEmbeddings(model=model_embedding,base_url=base_url)
     vectorstore = Chroma.from_documents(documents=chunks, embedding=embeddings, persist_directory=persist_directory)
     retriever = vectorstore.as_retriever()
@@ -39,9 +38,9 @@ def process_pdf(pdf_bytes, model_embedding, persist_directory,chunk_size,chunk_o
     return text_splitter, vectorstore, retriever
 
 def load_embeddings(model_embedding, persist_directory, chunk_size, chunk_overlap):
-    
+    base_url = 'http://ollama:11434'
     vectordb = Chroma(persist_directory=persist_directory,
-                      embedding_function= OllamaEmbeddings(model=model_embedding))
+                      embedding_function= OllamaEmbeddings(model=model_embedding,base_url=base_url))
     
     text_splitter = RecursiveCharacterTextSplitter(
          chunk_size=chunk_size, 
@@ -58,8 +57,11 @@ def combine_docs(docs):
 
 def ollama_llm(question, context, model_embedding):
     formatted_prompt = f"Question: {question}\n\nContext: {context}"
-
-    response = ollama.chat(
+    client = Client(
+        host='http://ollama:11434'
+        )
+    
+    response = client.chat(
         model=model_embedding,
         messages=[{"role": "user", "content": formatted_prompt}],
     )
@@ -106,7 +108,8 @@ def ask_question(pdf_bytes, question, create_embeddings, embeddings_directory, m
                        retriever, 
                        model_embedding)
     
-    return {result}
+    #return {result}
+    return result
 
 def main():
     # Load parameters
@@ -114,19 +117,19 @@ def main():
         config = yaml.safe_load(file)
 
     model_embedding = config['models']['embedding']
-    print(model_embedding)
+#    print(model_embedding)
     embeddings_directory = config['path']['emmbeddings']
-    print(embeddings_directory)
+ #   print(embeddings_directory)
     pdf_bytes = config['path']['pdfs']
-    print(pdf_bytes)
+ #   print(pdf_bytes)
     create_embeddings = config['parameters']['create_embeddings']
-    print(create_embeddings)
+  #  print(create_embeddings)
     chunk_size = config['parameters']['chunk_size']
-    print(chunk_size)
+   # print(chunk_size)
     chunk_overlap = config['parameters']['chunk_overlap']
-    print(chunk_overlap)
+    #print(chunk_overlap)
     question ='please provide me the structure of a docker-compose.yaml file'
-    print(question)
+   # print(question)
     results = ask_question(pdf_bytes ,question,create_embeddings, embeddings_directory, model_embedding, chunk_size, chunk_overlap)
     print(results)
 '''
