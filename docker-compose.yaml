@@ -36,7 +36,7 @@ services:
       - ollama
     tty: true 
     entrypoint: /bin/sh
-    command: ["python", "run_rag.py"]
+    #command: ["python", "run_rag.py"]
     #healthcheck:
     #    test: ["CMD", "curl", "-f", "http://localhost:11435"]
     #    interval: 30s
