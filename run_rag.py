@@ -10,7 +10,7 @@ from langchain.vectorstores import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import ChatOllama
 from ollama import ChatResponse, chat, Client
-#import ollama
+import ollama
 import re
 import os
 import yaml
@@ -110,6 +110,7 @@ def ask_question(pdf_bytes, question, create_embeddings, embeddings_directory, m
     
     #return {result}
     return result
+
 
 def main():
     # Load parameters
