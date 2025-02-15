@@ -2,11 +2,11 @@ models:
   embedding: 'deepseek-r1:1.5b'
   inference: 'deepseek-r1:1.5b'
 path:
-  emmbeddings: '/datasets/PDFs/deepseek-r1:1.5b/'
-  pdfs: '/datasets/PDFs/'
+  emmbeddings: '/datasets/deepseek-r1'
+  pdfs: '/datasets/packt'
   #pdfs: None
 parameters:
-  create_embeddings: True
+  create_embeddings: False
   chunk_size: 500
   chunk_overlap: 100
   
