@@ -26,22 +26,30 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
+      - ./entrypoint_rag.sh:/entrypoint_rag.sh
       - /media/Datos/datasets:/datasets
       - /media/Datos/models:/models
     environment:
       BASE_URL: http://ollama:11434
+      GRADIO_SERVER_NAME: 0.0.0.0
+      GRADIO_SERVER_PORT: 7860
     ports:
       - "8501:8501"
+      - "7680:7680"
     depends_on:
       - ollama
     tty: true 
-    entrypoint: /bin/sh
-    #command: ["python", "run_rag.py"]
+    #entrypoint: /bin/sh python run_rag.py
+    entrypoint: ["/usr/bin/bash", "/entrypoint_rag.sh"]
+    #command: ["python", "/app/run_rag.py"]
     #healthcheck:
-    #    test: ["CMD", "curl", "-f", "http://localhost:11435"]
-    #    interval: 30s
-    #    timeout: 10s
-    #    retries: 5
+      #test:  [ "CMD-SHELL", "bash", "-c", "{ printf >&3 'GET / HTTP/1.0\\r\\n\\r\\n'; cat <&3; } 3<>/dev/tcp/ollama/11434 | grep 'Ollama is' || exit 1"  ] 
+      #test: ["CMD-SHELL", "curl -f http://ollama:11434 || exit 1"]
+      #test: ["CMD-SHELL", "curl -f http://ollama:11434 "]
+      #interval: 20s
+      #timeout: 5s
+      #retries: 3
+      #start_period: 10s
     
     
 
