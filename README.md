@@ -4,7 +4,7 @@ This repository is a demo of building and using a RAG application based on LangC
 
 Local
 The local application is based on Docker Compose and NVIDIA container tools. So please consider that as requirements, the files follow the next order:
-
+```
 demo_rag/
 ├─ client/
 ├─ requirements.txt
@@ -16,7 +16,7 @@ docker-compose.yaml
 entrypoint.sh
 entrypoint_rag.sh/
 run_rag.py
-
+```
 To execute it, access the demo_rag directory, use the following commands in a terminal, and open the URL that Gradio will provide.
 ```
 docker-compose up
