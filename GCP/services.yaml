@@ -1,0 +1,73 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: demo-rag # Replace with your desired service name
+  annotations:
+    run.googleapis.com/launch-stage: ALPHA
+  labels:
+    cloud.googleapis.com/location: us-central1
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        autoscaling.knative.dev/maxScale: '1'
+        run.googleapis.com/cpu-throttling: 'false'
+        run.googleapis.com/startup-cpu-boost: 'true'
+        run.googleapis.com/container-dependencies: '{"client-deepseek":["ollama-deepseek"]}'
+    spec: 
+      nodeSelector:
+        run.googleapis.com/accelerator: "nvidia-l4"
+      volumes:
+        - name: data
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            volumeAttributes:
+              bucketName: <PROJECT-ID>-packt_pdf
+        - name: datasets
+          csi:
+            driver: gcsfuse.run.googleapis.com
+            volumeAttributes:
+              bucketName: <PROJECT-ID>-deepseek-r1-packt
+        - name: in-memory-1
+          emptyDir:
+            medium: Memory
+            sizeLimit: 10Gi
+      containers:
+        - name: client-deepseek
+          image: us-central1-docker.pkg.dev/<PROJECT-ID>/demo-rag/client
+          ports:
+            containerPort: 8080
+          env:
+          - name: OLLAMA_BASE_URL
+            value: http://localhost:11434
+          - name: GRADIO_SERVER_NAME
+            value: 0.0.0.0
+          - name: GRADIO_SERVER_PORT
+            value: '8080'
+          resources:
+            limits:
+              memory: 4Gi
+              cpu: 2000m
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: datasets
+              mountPath: /datasets
+        - name: ollama-deepseek
+          image: us-central1-docker.pkg.dev/<PROJECT-ID>/demo-rag/ollama
+          #ports:
+          #  - containerPort: 8080
+          env:
+          resources:
+            limits:
+              cpu: 6000m
+              memory: 16Gi
+              nvidia.com/gpu: '1'
+          startupProbe:
+            timeoutSeconds: 1
+            periodSeconds: 10
+            failureThreshold: 3
+            tcpSocket:
+              port: 11434
+
