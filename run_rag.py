@@ -148,6 +148,8 @@ def main():
         fn=ask_question,
         inputs=[
             gr.Files(label="Path to upload PDF directory (optional)"), # path to pdf
+
+          
             gr.Textbox(label="Ask a question"), # question
             gr.Checkbox(value=False,label='create embeddings', info='create embeddings'), # check to create embeddings
             #gr.File(label='Path to embeddings'), # path of the embeddings
