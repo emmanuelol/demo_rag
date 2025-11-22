@@ -2,14 +2,17 @@
 import gradio as gr
 #from langchain_community.document_loaders import PyMuPDFLoader,PyPDFDirectoryLoader
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import Chroma
-
+#from langchain.text_splitter import RecursiveCharacterTextSplitter
 #from lanngchain_community.emmbiddings import Chroma
-#from langchain_community.embeddings import OllamaEmbeddings
-from langchain_ollama.embeddings import OllamaEmbeddings
+#from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import ChatOllama
 from ollama import ChatResponse, chat, Client
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+#from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
+
+
 #import ollama
 import re
 import os
@@ -144,7 +147,7 @@ def main():
     interface = gr.Interface(
         fn=ask_question,
         inputs=[
-            gr.File(label="Path to upload PDF directory (optional)"), # path to pdf
+            gr.Files(label="Path to upload PDF directory (optional)"), # path to pdf
             gr.Textbox(label="Ask a question"), # question
             gr.Checkbox(value=False,label='create embeddings', info='create embeddings'), # check to create embeddings
             #gr.File(label='Path to embeddings'), # path of the embeddings

@@ -1,0 +1,57 @@
+projects/bubbly-cascade-317001/locations/us/connections/packt_demo
+
+    bqcx-751186070509-u608@gcp-sa-bigquery-condel.iam.gserviceaccount.com
+
+gcloud config set project bubbly-cascade-317001 
+
+gcloud config set run/region us-central1
+
+
+gcloud artifacts repositories create demorag --repository-format=docker --location=us-central1
+
+
+gcloud builds submit --tag us-central1-docker.pkg.dev/bubbly-cascade-317001/demorag/ollama-deepseek --machine-type e2-highcpu-32
+
+
+gcloud iam service-accounts create ollama-deepseek --display-name="Service Account for Ollama Cloud Run service"
+
+
+gcloud projects add-iam-policy-binding --member=serviceAccount:service-<project-id>@serverless-robot-prod.iam.gserviceaccount.com --role=roles/run.serviceAgent <project-id>
+
+
+gcloud beta run deploy ollama-deepseek --image us-central1-docker.pkg.dev/bubbly-cascade-317001/demorag/ollama-deepseek --concurrency 4 --cpu 8 --set-env-vars OLLAMA_NUM_PARALLEL=4 --gpu 1 --gpu-type nvidia-l4 --max-instances 3 --memory 32Gi --no-allow-unauthenticated --no-cpu-throttling --service-account ollama-deepseek@bubbly-cascade-317001.iam.gserviceaccount.com --timeout=600
+
+gcloud run services proxy ollama-deepseek --port=9090
+
+curl http://localhost:9090/api/generate -d '{
+  "model": "deepsee-r1:1.5b",
+  "prompt": "Why is the sky blue?"
+}'
+
+
+curl http://localhost:9090/api/chat -d '{
+  "model": "deepseek-r1:1.5b",
+  "messages": [{ "role": "user", "content": "Solve: 25 * 25" }],
+  "stream": false
+}'
+
+
+
+### client
+gcloud artifacts repositories create clientrag --repository-format=docker --location=us-central1
+
+gcloud builds submit --tag us-central1-docker.pkg.dev/bubbly-cascade-317001/clientrag/client-deepseek --machine-type e2-highcpu-32
+
+gcloud iam service-accounts create client-deepseek --display-name="Service Account for Client Ollama Cloud Run service"
+
+
+gcloud beta run deploy client-deepseek --image us-central1-docker.pkg.dev/bubbly-cascade-317001/clientrag/client-deepseek --concurrency 4 --cpu 8  --max-instances 3 --memory 32Gi --no-allow-unauthenticated --no-cpu-throttling --service-account client-deepseek@bubbly-cascade-317001.iam.gserviceaccount.com --timeout=3600
+
+client-deepseek@bubbly-cascade-317001.iam.gserviceaccount.com
+
+
+
+git clone ssh://emmanuelort@gmail.com@source.developers.google.com:2022/p/bubbly-cascade-317001/r/demo-rag
+
+gcloud source repos clone demo-rag --project=bubbly-cascade-317001
+
