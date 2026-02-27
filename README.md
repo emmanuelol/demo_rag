@@ -1,32 +1,51 @@
-# demo_rag
+# Demo RAG: LangChain + Ollama + DeepSeek-R1
 
-This repository is a demo of building and using a RAG application based on LangChain, Ollama, and DeeepSeek. There are two approaches to this task: one is based on running locally, and the second is how to run in the Google Cloud Platform.
+This repository provides a complete, containerized RAG (Retrieval-Augmented Generation) application for querying your own PDFs using local Large Language Models.
 
-Local
-The local application is based on Docker Compose and NVIDIA container tools. So please consider that as requirements, the files follow the next order:
+## Getting Started
+
+### 1. Prerequisites
+- Docker and Docker Compose
+- NVIDIA Container Toolkit (for GPU acceleration)
+
+### 2. Configuration
+Copy the example environment file and adjust the paths to your local dataset and model directories.
+```bash
+cp .env.example .env
 ```
+- DATASETS_DIR: Absolute path to your PDF documents.
+- MODELS_DIR: Absolute path for persistent model storage.
+
+### 3. Launch
+Run the entire stack with a single command:
+```bash
+docker-compose up -d
+```
+
+## Accessing the Services
+- RAG Interface (Gradio): http://localhost:7860
+- Development Environment (Jupyter Lab): http://localhost:8888/lab
+- Ollama API: http://localhost:11434
+
+## Project Structure
+```text
 demo_rag/
-├─ client/
-├─ requirements.txt
-├─ Dockerfile
-docs/
-LICENSE
-README.md
-docker-compose.yaml
-entrypoint.sh
-entrypoint_rag.sh/
-run_rag.py
-```
-To execute it, access the demo_rag directory, use the following commands in a terminal, and open the URL that Gradio will provide.
-```
-docker-compose up
-```
-To close all, as above, access the demo_rag directory and use the command:
-```
-docker-compose down
+├── client/              # Frontend and RAG logic
+├── GCP/                 # Google Cloud Platform configuration
+├── datasets/            # Default location for PDFs (configurable in .env)
+├── models/              # Local storage for LLM weights (configurable in .env)
+├── research/            # Experimental notebooks and debug scripts
+├── scripts/             # Archived environment-specific scripts
+├── docker-compose.yaml  # Unified orchestration
+└── run_rag.py           # Main RAG application entry point
 ```
 
-![UI for RAG](https://github.com/emmanuelol/demo_rag/blob/main/docs/Captura%20desde%202025-02-14%2018-36-35.png) 
+## Features
+- Environment Agnostic: Works seamlessly on Native Linux and WSL2.
+- GPU Accelerated: Pre-configured for NVIDIA hardware.
+- Persistent Storage: Models and vector embeddings are stored outside containers.
+- Live Development: Jupyter Lab runs alongside the RAG application for rapid prototyping.
+
 ## Collaborators
-Emmanuel Ortiz Lopez ([emmanuelol](https://github.com/emmanuelol)) :octocat:
-Carlos Armando Ortiz Lopez ([carlosaol](https://github.com/carlosaol))
+- Emmanuel Ortiz Lopez (https://github.com/emmanuelol)
+- Carlos Armando Ortiz Lopez (https://github.com/carlosaol)

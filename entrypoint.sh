@@ -1,23 +1,19 @@
 #!/bin/bash
-#export OLLAMA_HOST=127.0.0.1:11435
 
-#export OLLAMA_HOST=locahost:11435
-
-#export OLLAMA_HOST=0.0.0.0:11435
-
-# Start Ollama in the background.
-/bin/ollama serve &
-# Record Process ID.
+# Start Ollama in the background
+ollama serve &
 pid=$!
 
-# Pause for Ollama to start.
-sleep 5
+# Wait for Ollama to be ready
+echo "Waiting for Ollama to start..."
+until curl -s http://localhost:11434 > /dev/null; do
+    sleep 2
+done
 
-echo "🔴 Retrieve Deepseek-r1 model..."
+# Pull the model if not already present
+echo "🔴 Ensuring model deepseek-r1:1.5b is available..."
 ollama pull deepseek-r1:1.5b
 echo "🟢 Done!"
-sleep 5
-# Wait for Ollama process to finish.
 
+# Keep the process running
 wait $pid
-ollama serve

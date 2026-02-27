@@ -1,55 +1,48 @@
 services:
   ollama:
     image: ollama/ollama
-    container_name: ollama # Sets the container name to ollama
+    container_name: ollama
     ports:
-      - "11434:11434" # Maps port 11434 on the host to port 11434 in the container
-    #  - "11435:11435"
-    #environment:
-    #  - OLLAMA_HOST=127.0.0.1:11435
+      - "11434:11434"
     volumes:
       - ./entrypoint.sh:/entrypoint.sh
+      - ollama_data:/root/.ollama
     deploy:
       resources:
         reservations:
           devices:
-            - driver: nvidia # Specifies the driver to use for GPU
-              count: 1 # Reserves 1 GPU
-              capabilities: [gpu] # Specifies that the device capability is GPU
-    #command: 'ollama pull deepseek-r1:1.5b && ollama serve'
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     tty: true
     entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
+
   client:
     build:
-      context: ./client # Specifies the build context as the ./app directory
-      dockerfile: Dockerfile # Uses the Dockerfile in the build context
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: rag_client
     working_dir: /app
     volumes:
       - ./:/app
       - ./entrypoint_rag.sh:/entrypoint_rag.sh
-      - /media/Datos/datasets:/datasets
-      - /media/Datos/models:/models
+      - ${DATASETS_DIR:-./datasets}:/datasets
+      - ${MODELS_DIR:-./models}:/models
     environment:
-      BASE_URL: http://ollama:11434
-      GRADIO_SERVER_NAME: 0.0.0.0
-      GRADIO_SERVER_PORT: 7860
+      - BASE_URL=http://ollama:11434
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=7860
+      - JUPYTER_PORT=${JUPYTER_PORT:-8888}
     ports:
-      - "8501:8501"
-      - "7681:7680"
+      - "7860:7860"
+      - "${JUPYTER_PORT:-8888}:${JUPYTER_PORT:-8888}"
     depends_on:
       - ollama
-    tty: true 
-    #entrypoint: /bin/sh python run_rag.py
+    tty: true
     entrypoint: ["/usr/bin/bash", "/entrypoint_rag.sh"]
-    #command: ["python", "/app/run_rag.py"]
-    #healthcheck:
-      #test:  [ "CMD-SHELL", "bash", "-c", "{ printf >&3 'GET / HTTP/1.0\\r\\n\\r\\n'; cat <&3; } 3<>/dev/tcp/ollama/11434 | grep 'Ollama is' || exit 1"  ] 
-      #test: ["CMD-SHELL", "curl -f http://ollama:11434 || exit 1"]
-      #test: ["CMD-SHELL", "curl -f http://ollama:11434 "]
-      #interval: 20s
-      #timeout: 5s
-      #retries: 3
-      #start_period: 10s
+
+volumes:
+  ollama_data:
     
     
 

@@ -24,7 +24,7 @@ def process_pdf(pdf_bytes, model_embedding, persist_directory,chunk_size,chunk_o
     if pdf_bytes is None:
         return None, None, None
 
-    base_url = 'http://ollama:11434'
+    base_url = os.getenv('BASE_URL', 'http://ollama:11434')
     #loader = PyMuPDFLoader(pdf_bytes)
 
     loader = PyPDFDirectoryLoader(path = pdf_bytes)
@@ -41,8 +41,8 @@ def process_pdf(pdf_bytes, model_embedding, persist_directory,chunk_size,chunk_o
     return text_splitter, vectorstore, retriever
 
 def load_embeddings(model_embedding, persist_directory, chunk_size, chunk_overlap):
-    base_url = 'http://ollama:11434'
-    print(model_embedding)
+    base_url = os.getenv('BASE_URL', 'http://ollama:11434')
+    print(f"Loading embeddings for model: {model_embedding}")
     vectordb = Chroma(persist_directory=persist_directory,
                       embedding_function= OllamaEmbeddings(model=model_embedding,base_url=base_url))
     
@@ -61,8 +61,9 @@ def combine_docs(docs):
 
 def ollama_llm(question, context, model_embedding):
     formatted_prompt = f"Question: {question}\n\nContext: {context}"
+    base_url = os.getenv('BASE_URL', 'http://ollama:11434')
     client = Client(
-        host='http://ollama:11434'
+        host=base_url
         )
     
     response = client.chat(
@@ -116,33 +117,30 @@ def ask_question(pdf_bytes, question, create_embeddings, embeddings_directory, m
     #return {result}
     return result
 
+import argparse
+
 def main():
+    parser = argparse.ArgumentParser(description="RAG Application CLI")
+    parser.add_argument("--ingest", action="store_true", help="Ingest PDFs from a directory")
+    parser.add_argument("--pdf_path", type=str, help="Path to the PDF directory")
+    parser.add_argument("--persist_dir", type=str, default="/datasets/deepseek-r1", help="Directory to persist embeddings")
+    parser.add_argument("--model", type=str, default="deepseek-r1:1.5b", help="Embedding model name")
+    parser.add_argument("--chunk_size", type=int, default=500, help="Chunk size for text splitting")
+    parser.add_argument("--chunk_overlap", type=int, default=100, help="Chunk overlap for text splitting")
+    
+    args = parser.parse_args()
 
-    # Load parameters
-    #with open('config.yaml','r') as file:
-    #    config = yaml.safe_load(file)
+    if args.ingest:
+        if not args.pdf_path:
+            print("Error: --pdf_path is required for ingestion.")
+            return
+        print(f"Starting ingestion from {args.pdf_path}...")
+        process_pdf(args.pdf_path, args.model, args.persist_dir, args.chunk_size, args.chunk_overlap)
+        print("Ingestion complete!")
+        return
 
-#    model_embedding = config['models']['embedding']
-#    print(model_embedding)
-#    embeddings_directory = config['path']['emmbeddings']
- #   print(embeddings_directory)
-#    pdf_bytes = config['path']['pdfs']
- #   print(pdf_bytes)
-#    create_embeddings = config['parameters']['create_embeddings']
-  #  print(create_embeddings)
-#    chunk_size = config['parameters']['chunk_size']
-   # print(chunk_size)
-#    chunk_overlap = config['parameters']['chunk_overlap']
-    #print(chunk_overlap)
-#    question ='please provide me the structure of a docker-compose.yaml file'
-   # print(question)
-    #results = ask_question(pdf_bytes ,question,create_embeddings, embeddings_directory, model_embedding, chunk_size, chunk_overlap)
-    #print(results)
-    ###
-    # path_to_pdf,question,
-
-    print('loading')
-    #sleep(5*60)
+    # Default: Launch Gradio UI
+    print('Loading Gradio UI...')
 
     interface = gr.Interface(
         fn=ask_question,
@@ -165,7 +163,6 @@ def main():
     )
 
     interface.launch(share=True)
-    #interface.launch(inbrowser=True)
 '''
 if __name__ == '__main__':
     interface.launch()
