@@ -10,9 +10,12 @@ until curl -s http://localhost:11434 > /dev/null; do
     sleep 2
 done
 
-# Pull the model if not already present
-echo "🔴 Ensuring model deepseek-r1:1.5b is available..."
-ollama pull deepseek-r1:1.5b
+# Pull the model(s) if not already present
+MODELS=${OLLAMA_MODELS:-${MODEL_NAME:-"deepseek-r1:1.5b"}}
+for model in $MODELS; do
+    echo "🔴 Ensuring model $model is available..."
+    ollama pull "$model"
+done
 echo "🟢 Done!"
 
 # Keep the process running

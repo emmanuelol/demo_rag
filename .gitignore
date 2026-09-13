@@ -3,3 +3,13 @@
 *.pickle
 chroma_db/
 .gradio/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local codegraph and context artifacts
+local_codegraph*
+target_context*
+targeted_context*
