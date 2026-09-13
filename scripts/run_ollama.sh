@@ -3,6 +3,8 @@
 full_path=$(readlink -f $0)
 dir_path=$(dirname $full_path)
 
+# create network
+docker network create ollama-net
 
 # Default values
 ## the current script is using a production image, to use for development please provide as argument for this script -i aidex_dev
@@ -29,10 +31,19 @@ do
 done
 
 
+#docker run --name $container_name -d -it --rm --privileged \
+#--network=host --gpus all --shm-size 16G \
+#-e DISPLAY=$DISPLAY -e QT_X11_NO_MITSHM=1 \
+#-e OLLAMA_HOST=127.0.0.1:11434 \
+#-v /tmp/.X11-unix:/tmp/.X11-unix  \
+#-v $datasets_path:/datasets \
+#-v $models_path:/models \
+#-v $dir_path:/app $image_name 
+
 docker run --name $container_name -d -it --rm --privileged \
 --network=host --gpus all --shm-size 16G \
 -e DISPLAY=$DISPLAY -e QT_X11_NO_MITSHM=1 \
--e OLLAMA_HOST=127.0.0.1:11434 \
+-e OLLAMA_HOST="0.0.0.0" \
 -v /tmp/.X11-unix:/tmp/.X11-unix  \
 -v $datasets_path:/datasets \
 -v $models_path:/models \
@@ -41,6 +52,7 @@ docker run --name $container_name -d -it --rm --privileged \
 
 #VAR1='jupyter lab --allow-root --no-browser --port='
 #cmd="${VAR1}${port}"
-cmd = 'export OLLAMA_HOST=127.0.0.1:11435'
-docker exec -it $container_name bash -c "$cmd"
+
+
+#docker exec -it $container_name bash -c export OLLAMA_HOST=127.0.0.1:11435
 docker exec -it $container_name bash

@@ -1,6 +1,9 @@
 #streamlit==1.35.0
 #qdrant-client==1.9.1
 ollama
+google-generativeai 
+langchain_google_genai
+docling
 langchain
 langchain-community
 langchain-ollama
@@ -8,3 +11,5 @@ chromadb
 gradio
 pypdf
 jupyterlab 
+langchain-text-splitters  
+langchain-chroma>=0.1.2
