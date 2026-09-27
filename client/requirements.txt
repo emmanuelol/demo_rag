@@ -11,7 +11,8 @@ langchain-ollama
 chromadb
 gradio
 pypdf
-jupyterlab 
+jupyterlab>=4.1.0
+ipywidgets>=8.1.0
 langchain-text-splitters  
 langchain-chroma>=0.1.2
 pytest>=8.0.0

@@ -168,8 +168,12 @@ docker run --rm -v $(pwd):/app:ro -w /app python:3.10-slim sh -c \
 │   ├── Dockerfile              # Python 3.10 application container
 │   └── requirements.txt        # Hardened dependency manifest
 ├── GCP/
-│   └── services.yaml           # Cloud Run Knative deployment spec
+│   └── services.yaml           # GKE Kubernetes production topology manifests
+├── research/
+│   └── chunking_analysis.ipynb # Semantic chunk distribution & 2D PCA cluster notebook
 ├── scripts/
+│   ├── ingestion_core.py       # Decoupled ETL engine & deterministic UUID chunker
+│   ├── ingest_pipeline.py      # Production CLI data ingestion pipeline
 │   ├── context_assembler.py    # ZeroVRAMRetriever & AST repository mapper
 │   ├── factory.py              # Provider-Agnostic Factory (Local vs GCP)
 │   ├── grader.py               # CRAG Retrieval Grader & Query Rewriter

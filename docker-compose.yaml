@@ -85,10 +85,8 @@ services:
       - GRADIO_SERVER_NAME=0.0.0.0
       - GRADIO_SERVER_PORT=${GRADIO_SERVER_PORT:-7860}
       - GRADIO_SHARE=${GRADIO_SHARE:-false}
-      - JUPYTER_PORT=${JUPYTER_PORT:-8888}
     ports:
       - "${GRADIO_PORT:-7860}:${GRADIO_SERVER_PORT:-7860}"
-      - "${JUPYTER_PORT:-8888}:${JUPYTER_PORT:-8888}"
     depends_on:
       ollama:
         condition: service_started
@@ -97,7 +95,34 @@ services:
     tty: true
     entrypoint: ["/usr/bin/bash", "/entrypoint_rag.sh"]
 
+  notebook:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: demo_rag_notebook
+    working_dir: /app
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./:/app
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - PHOENIX_HOST=phoenix
+      - PHOENIX_PORT=4317
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --ServerApp.token=''
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
 volumes:
   ollama_data:
   qdrant_data:
+
 
