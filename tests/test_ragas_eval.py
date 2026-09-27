@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-Continuous Evaluation Suite (Deterministic Lexical Evaluation Matrix - Offline Proxy).
-Evaluates:
+Deterministic Lexical Evaluation Matrix (Offline Proxy) & CRAG Verification.
+
+NOTE: This suite intentionally avoids live LLM-as-a-judge dependencies (e.g., official Ragas API) 
+to ensure zero-cost, air-gapped, and 100% deterministic CI/CD execution. 
+It evaluates:
 1. Semantic Router classification accuracy.
 2. Retrieval Grader relevance filtering and query rewriter.
 3. LangGraph CRAG state machine self-correction loop and recursion ceiling.
-4. Quantitative evaluation matrix (Context Precision, Answer Relevance) across Golden Dataset.
-
-NOTE (Offline Metric Transparency):
-The evaluation matrix executes a deterministic token-overlap heuristic matrix ("Deterministic
-Lexical Evaluation Matrix - Offline Proxy") rather than an LLM-as-a-judge framework.
-This architecture guarantees:
-- Air-gapped CI/CD execution without external model API calls or network dependencies.
-- Zero token overhead and 100% deterministic, repeatable grading across runs.
-- Sub-15 second execution latency within CI test runners.
+4. Quantitative lexical overlap metrics (Context Precision, Answer Relevance) across Golden Dataset.
 """
 
 import os

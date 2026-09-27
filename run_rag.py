@@ -2,6 +2,7 @@
 import argparse
 import os
 import re
+import tempfile
 from time import sleep
 import yaml
 
@@ -183,13 +184,13 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
     else:
         raise TypeError(f"Unsupported pdf_source type: {type(pdf_source)}")
 
-    # Clean up temporary uploaded files to prevent disk exhaustion across sessions
-    for tmp_f in temp_files_to_clean:
+    # Chaos/SRE Guard: Unlink temporary upload files to prevent disk starvation
+    for temp_file in temp_files_to_clean:
         try:
-            if os.path.isfile(tmp_f):
-                os.remove(tmp_f)
-        except OSError:
-            pass
+            if os.path.exists(temp_file):
+                os.unlink(temp_file)
+        except Exception as e:
+            print(f"⚠️ Failed to clean up temp file {temp_file}: {e}")
 
     if not data:
         return None, None, None
