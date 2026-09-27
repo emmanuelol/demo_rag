@@ -88,6 +88,12 @@ def parse_args():
         help="CPU thread limit for FastEmbed execution (default: 4)"
     )
     parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=os.getenv("FASTEMBED_CACHE_PATH", os.getenv("FASTEMBED_CACHE_DIR", None)),
+        help="Custom cache directory for FastEmbed model weights (default: $FASTEMBED_CACHE_PATH or ~/.cache/fastembed)"
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable debug-level logging"
@@ -106,6 +112,8 @@ def main():
     logger.info(f"📁 Input Directory: {input_path}")
     logger.info(f"📦 Qdrant Target:   http://{args.qdrant_host}:{args.qdrant_port} -> [{args.collection_name}]")
     logger.info(f"⚙️  Batch Size:      {args.batch_size} (CPU Threads: {args.threads})")
+    if args.cache_dir:
+        logger.info(f"💾 FastEmbed Cache: {args.cache_dir}")
 
     if not input_path.exists():
         logger.error(f"❌ Input directory does not exist: {input_path}")
@@ -141,7 +149,8 @@ def main():
             collection_name=args.collection_name,
             qdrant_host=args.qdrant_host,
             qdrant_port=args.qdrant_port,
-            threads=args.threads
+            threads=args.threads,
+            cache_dir=args.cache_dir
         )
         result = indexer.index_chunks(
             chunks=chunks,

@@ -509,12 +509,14 @@ class ZeroVRAMRetriever:
         threads: int = 4,
         client: Optional[Any] = None,
         embedding_model: Optional[Any] = None,
-        reranker: Optional[Any] = None
+        reranker: Optional[Any] = None,
+        cache_dir: Optional[str] = None
     ):
         self.qdrant_host = os.getenv("QDRANT_HOST", qdrant_host)
         self.qdrant_port = int(os.getenv("QDRANT_PORT", str(qdrant_port)))
         self.collection_name = collection_name
         self.threads = threads
+        self.cache_dir = cache_dir or os.getenv("FASTEMBED_CACHE_PATH") or os.getenv("FASTEMBED_CACHE_DIR")
 
         if client is not None:
             self.client = client
@@ -539,7 +541,11 @@ class ZeroVRAMRetriever:
             self.embedding_model = embedding_model
         elif TextEmbedding is not None:
             try:
-                self.embedding_model = TextEmbedding(model_name=embedding_model_name, threads=threads)
+                self.embedding_model = TextEmbedding(
+                    model_name=embedding_model_name,
+                    cache_dir=self.cache_dir,
+                    threads=threads
+                )
             except Exception as e:
                 print(f"⚠️ FastEmbed initialization warning: {e}")
                 self.embedding_model = None

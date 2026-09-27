@@ -172,13 +172,15 @@ class QdrantIndexer:
         qdrant_host: Optional[str] = None,
         qdrant_port: Optional[int] = None,
         embedding_model: str = "BAAI/bge-small-en-v1.5",
-        threads: int = 4
+        threads: int = 4,
+        cache_dir: Optional[str] = None
     ):
         self.collection_name = collection_name
         self.qdrant_host = qdrant_host or os.getenv("QDRANT_HOST", "localhost")
         self.qdrant_port = int(qdrant_port or os.getenv("QDRANT_PORT", "6333"))
         self.embedding_model_name = embedding_model
         self.threads = threads
+        self.cache_dir = cache_dir or os.getenv("FASTEMBED_CACHE_PATH") or os.getenv("FASTEMBED_CACHE_DIR")
 
         self._client = None
         self._embedding_model = None
@@ -202,12 +204,13 @@ class QdrantIndexer:
 
     @property
     def embedding_model(self):
-        """Lazy-loaded FastEmbed model with strict thread limits."""
+        """Lazy-loaded FastEmbed model with strict thread limits and aligned cache directory."""
         if self._embedding_model is None:
             try:
                 from fastembed import TextEmbedding
                 self._embedding_model = TextEmbedding(
                     model_name=self.embedding_model_name,
+                    cache_dir=self.cache_dir,
                     threads=self.threads
                 )
             except Exception as e:

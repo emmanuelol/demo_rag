@@ -140,11 +140,16 @@ def dispatch_llm_generation(prompt: str, context: str = "", model_embedding: str
 def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
     """
     Extracts text from PDF source, chunks with text splitter, and indexes into Qdrant via Zero-VRAM FastEmbed.
+    Automatically garbage-collects temporary uploaded PDF artifacts to prevent disk exhaustion.
     """
     if not pdf_source:
         return None, None, None
 
     data = []
+    temp_files_to_clean = []
+    import tempfile
+    temp_dir = os.path.abspath(tempfile.gettempdir())
+
     if isinstance(pdf_source, list):
         for item in pdf_source:
             file_path = item.name if hasattr(item, 'name') else str(item)
@@ -152,6 +157,12 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
                 if PyPDFLoader is not None:
                     loader = PyPDFLoader(file_path=file_path)
                     data.extend(loader.load())
+                try:
+                    norm_path = os.path.abspath(file_path)
+                    if norm_path.startswith(temp_dir) or "gradio" in norm_path.lower():
+                        temp_files_to_clean.append(norm_path)
+                except Exception:
+                    pass
     elif isinstance(pdf_source, str):
         if os.path.isdir(pdf_source):
             if PyPDFDirectoryLoader is not None:
@@ -161,10 +172,24 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
             if PyPDFLoader is not None:
                 loader = PyPDFLoader(file_path=pdf_source)
                 data.extend(loader.load())
+            try:
+                norm_path = os.path.abspath(pdf_source)
+                if norm_path.startswith(temp_dir) and "gradio" in norm_path.lower():
+                    temp_files_to_clean.append(norm_path)
+            except Exception:
+                pass
         else:
             raise FileNotFoundError(f"Path not found: {pdf_source}")
     else:
         raise TypeError(f"Unsupported pdf_source type: {type(pdf_source)}")
+
+    # Clean up temporary uploaded files to prevent disk exhaustion across sessions
+    for tmp_f in temp_files_to_clean:
+        try:
+            if os.path.isfile(tmp_f):
+                os.remove(tmp_f)
+        except OSError:
+            pass
 
     if not data:
         return None, None, None

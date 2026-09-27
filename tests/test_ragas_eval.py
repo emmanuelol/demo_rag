@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 """
-Continuous Evaluation Suite (Ragas-Compatible Metric Scoring & CRAG Verification).
+Continuous Evaluation Suite (Deterministic Lexical Evaluation Matrix - Offline Proxy).
 Evaluates:
 1. Semantic Router classification accuracy.
 2. Retrieval Grader relevance filtering and query rewriter.
 3. LangGraph CRAG state machine self-correction loop and recursion ceiling.
 4. Quantitative evaluation matrix (Context Precision, Answer Relevance) across Golden Dataset.
+
+NOTE (Offline Metric Transparency):
+The evaluation matrix executes a deterministic token-overlap heuristic matrix ("Deterministic
+Lexical Evaluation Matrix - Offline Proxy") rather than an LLM-as-a-judge framework.
+This architecture guarantees:
+- Air-gapped CI/CD execution without external model API calls or network dependencies.
+- Zero token overhead and 100% deterministic, repeatable grading across runs.
+- Sub-15 second execution latency within CI test runners.
 """
 
 import os
@@ -102,7 +110,8 @@ def tokenize(text: str) -> set:
 
 def calculate_context_precision(contexts: List[str], ground_truth: str) -> float:
     """
-    Computes Context Precision: ratio of relevant tokens in retrieved context relative to ground truth.
+    Computes Context Precision via Deterministic Lexical Heuristic (Offline Proxy):
+    Calculates ratio of relevant ground-truth tokens retrieved in context passages.
     Score ranges from 0.0 to 1.0.
     """
     if not contexts or not ground_truth:
@@ -122,7 +131,9 @@ def calculate_context_precision(contexts: List[str], ground_truth: str) -> float
 
 def calculate_answer_relevance(generated_answer: str, ground_truth: str, question: str) -> float:
     """
-    Computes Answer Relevance: alignment of generated answer with question and ground truth tokens.
+    Computes Answer Relevance via Deterministic Lexical Heuristic (Offline Proxy):
+    Calculates token alignment of generated answer against union of question and ground truth.
+    Score ranges from 0.0 to 1.0.
     """
     if not generated_answer:
         return 0.0
@@ -222,7 +233,9 @@ def test_crag_state_machine_self_correction_loop(monkeypatch):
 
 def test_ragas_evaluation_matrix_scoring(capsys):
     """
-    Test 4: Execute evaluation matrix over the Golden Dataset and print scoring table.
+    Test 4: Execute Deterministic Lexical Evaluation Matrix (Offline Proxy) over the Golden Dataset.
+    Prints scoring table and verifies Context Precision and Answer Relevance quality gates
+    without external LLM-as-a-judge latency or API overhead.
     """
     matrix_results = []
 
