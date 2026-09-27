@@ -88,101 +88,38 @@ setup_telemetry()
 
 
 
-def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
-    if not pdf_source:
-        return None, None, None
-
-    base_url = os.getenv('BASE_URL', 'http://ollama:11434')
-
-    data = []
-    if isinstance(pdf_source, list):
-        for item in pdf_source:
-            file_path = item.name if hasattr(item, 'name') else str(item)
-            if os.path.exists(file_path):
-                loader = PyPDFLoader(file_path=file_path)
-                data.extend(loader.load())
-    elif isinstance(pdf_source, str):
-        if os.path.isdir(pdf_source):
-            loader = PyPDFDirectoryLoader(path=pdf_source)
-            data = loader.load()
-        elif os.path.isfile(pdf_source):
-            loader = PyPDFLoader(file_path=pdf_source)
-            data = loader.load()
-        else:
-            raise FileNotFoundError(f"Path not found: {pdf_source}")
-    else:
-        raise TypeError(f"Unsupported pdf_source type: {type(pdf_source)}")
-
-    if not data:
-        return None, None, None
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=chunk_overlap
-    )
-    chunks = text_splitter.split_documents(data)
-
-    if reset_existing and os.path.exists(persist_directory):
-        print(f"Resetting vector store at {persist_directory}...")
-        import shutil
-        shutil.rmtree(persist_directory, ignore_errors=True)
-        os.makedirs(persist_directory, exist_ok=True)
-
-    embeddings = OllamaEmbeddings(model=model_embedding, base_url=base_url)
-    vectorstore = Chroma.from_documents(documents=chunks, embedding=embeddings, persist_directory=persist_directory)
-    retriever = vectorstore.as_retriever()
-
-    return text_splitter, vectorstore, retriever
-
-
-def load_embeddings(model_embedding, persist_directory, chunk_size, chunk_overlap):
-    base_url = os.getenv('BASE_URL', 'http://ollama:11434')
-    print(f"Loading embeddings for model: {model_embedding}")
-    vectordb = Chroma(
-        persist_directory=persist_directory,
-        embedding_function=OllamaEmbeddings(model=model_embedding, base_url=base_url)
-    )
-    
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, 
-        chunk_overlap=chunk_overlap
-    )
-   
-    retriever = vectordb.as_retriever()
-    return text_splitter, vectordb, retriever
-
-
-def combine_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-
 def ollama_llm(question, context, model_embedding):
-    formatted_prompt = f"Question: {question}\n\nContext: {context}"
+    formatted_prompt = f"Question: {question}\n\nContext: {context}" if context else question
     base_url = os.getenv('BASE_URL', 'http://ollama:11434')
     timeout = float(os.getenv('OLLAMA_TIMEOUT', '60.0'))
     num_ctx = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
     temperature = float(os.getenv('OLLAMA_TEMPERATURE', '0.2'))
 
     try:
-        client = Client(host=base_url, timeout=timeout)
-        response = client.chat(
-            model=model_embedding,
-            messages=[{"role": "user", "content": formatted_prompt}],
-            options={
-                "num_ctx": num_ctx,
-                "temperature": temperature,
-            },
-        )
+        client_cls = globals().get("Client")
+        if client_cls is not None:
+            client = client_cls(host=base_url, timeout=timeout)
+            response = client.chat(
+                model=model_embedding,
+                messages=[{"role": "user", "content": formatted_prompt}],
+                options={
+                    "num_ctx": num_ctx,
+                    "temperature": temperature,
+                },
+            )
 
-        response_content = (
-            response.get("message", {}).get("content", "")
-            if isinstance(response, dict)
-            else getattr(getattr(response, "message", None), "content", "")
-        )
-        if not response_content:
-            return "Error: Empty response received from LLM."
+            response_content = (
+                response.get("message", {}).get("content", "")
+                if isinstance(response, dict)
+                else getattr(getattr(response, "message", None), "content", "")
+            )
+            if not response_content:
+                return "Error: Empty response received from LLM."
 
-        final_answer = re.sub(r"<think>.*?</think>", "", response_content, flags=re.DOTALL).strip()
-        return final_answer if final_answer else response_content.strip()
+            final_answer = re.sub(r"<think>.*?</think>", "", response_content, flags=re.DOTALL).strip()
+            return final_answer if final_answer else response_content.strip()
+        else:
+            return f"Error: Ollama library not installed. Simulated answer for: {question}"
     except Exception as e:
         return f"Error: LLM service unreachable or request failed ({type(e).__name__}: {str(e)})"
 
@@ -198,6 +135,111 @@ def dispatch_llm_generation(prompt: str, context: str = "", model_embedding: str
         return provider.generate(prompt, context)
     except Exception:
         return ollama_llm(prompt, context, model_embedding)
+
+
+def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
+    """
+    Extracts text from PDF source, chunks with text splitter, and indexes into Qdrant via Zero-VRAM FastEmbed.
+    """
+    if not pdf_source:
+        return None, None, None
+
+    data = []
+    if isinstance(pdf_source, list):
+        for item in pdf_source:
+            file_path = item.name if hasattr(item, 'name') else str(item)
+            if os.path.exists(file_path):
+                if PyPDFLoader is not None:
+                    loader = PyPDFLoader(file_path=file_path)
+                    data.extend(loader.load())
+    elif isinstance(pdf_source, str):
+        if os.path.isdir(pdf_source):
+            if PyPDFDirectoryLoader is not None:
+                loader = PyPDFDirectoryLoader(path=pdf_source)
+                data.extend(loader.load())
+        elif os.path.isfile(pdf_source):
+            if PyPDFLoader is not None:
+                loader = PyPDFLoader(file_path=pdf_source)
+                data.extend(loader.load())
+        else:
+            raise FileNotFoundError(f"Path not found: {pdf_source}")
+    else:
+        raise TypeError(f"Unsupported pdf_source type: {type(pdf_source)}")
+
+    if not data:
+        return None, None, None
+
+    text_splitter = None
+    if RecursiveCharacterTextSplitter is not None:
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
+        chunks = text_splitter.split_documents(data)
+    else:
+        chunks = data
+
+    from scripts.ingestion_core import QdrantIndexer, generate_deterministic_chunk_id
+    from scripts.context_assembler import ZeroVRAMRetriever
+
+    q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
+    q_port = int(os.getenv("QDRANT_PORT", "6333"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
+
+    indexer = QdrantIndexer(
+        collection_name=collection_name,
+        qdrant_host=q_host,
+        qdrant_port=q_port,
+        threads=4
+    )
+
+    prepared_chunks = []
+    for idx, doc in enumerate(chunks):
+        text = getattr(doc, "page_content", str(doc))
+        meta = dict(getattr(doc, "metadata", {}))
+        meta["chunk_index"] = idx
+        c_id = generate_deterministic_chunk_id(text, meta)
+        prepared_chunks.append({"id": c_id, "text": text, "metadata": meta})
+
+    indexer.index_chunks(prepared_chunks, batch_size=32, show_progress=False)
+
+    retriever = ZeroVRAMRetriever(
+        qdrant_host=q_host,
+        qdrant_port=q_port,
+        collection_name=collection_name,
+        threads=4
+    )
+    return text_splitter, None, retriever
+
+
+def load_embeddings(model_embedding="qwen2.5:7b-fenced", persist_directory=None, chunk_size=500, chunk_overlap=100):
+    """
+    Initializes ZeroVRAMRetriever targeting local or containerized Qdrant.
+    """
+    from scripts.context_assembler import ZeroVRAMRetriever
+
+    q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
+    q_port = int(os.getenv("QDRANT_PORT", "6333"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
+
+    retriever = ZeroVRAMRetriever(
+        qdrant_host=q_host,
+        qdrant_port=q_port,
+        collection_name=collection_name,
+        threads=4
+    )
+
+    text_splitter = None
+    if RecursiveCharacterTextSplitter is not None:
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size, 
+            chunk_overlap=chunk_overlap
+        )
+   
+    return text_splitter, None, retriever
+
+
+def combine_docs(docs):
+    return "\n\n".join(getattr(doc, "page_content", str(doc)) for doc in docs)
 
 
 class AgentState(TypedDict):
@@ -224,7 +266,7 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
         return {"route": route, "trace": state.get("trace", []) + [f"route:{route}"]}
 
     def direct_chat_node(state: AgentState) -> dict:
-        ans = dispatch_llm_generation(state["question"], context="", model_embedding=model_embedding)
+        ans = ollama_llm(state["question"], context="", model_embedding=model_embedding)
         return {"generation": ans, "trace": state.get("trace", []) + ["direct_chat"]}
 
     def codebase_ast_node(state: AgentState) -> dict:
@@ -234,7 +276,7 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
             "ZeroVRAMRetriever (scripts/context_assembler.py), Provider Factory (scripts/factory.py), "
             "and LangGraph State Machine (run_rag.py)."
         )
-        ans = dispatch_llm_generation(state["question"], context=summary_ctx, model_embedding=model_embedding)
+        ans = ollama_llm(state["question"], context=summary_ctx, model_embedding=model_embedding)
         return {"generation": ans, "trace": state.get("trace", []) + ["codebase_ast"]}
 
     def retrieve_node(state: AgentState) -> dict:
@@ -273,7 +315,7 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
     def generate_node(state: AgentState) -> dict:
         docs = state.get("documents", [])
         formatted_content = "\n\n".join(d.get("text", "") for d in docs if d.get("text"))
-        ans = dispatch_llm_generation(state["question"], formatted_content, model_embedding)
+        ans = ollama_llm(state["question"], formatted_content, model_embedding)
         return {"generation": ans, "trace": state.get("trace", []) + ["generate"]}
 
     def fallback_node(state: AgentState) -> dict:
@@ -360,9 +402,9 @@ def run_crag_agent(
     # Deterministic fallback loop if StateGraph is unavailable
     route = route_query(question, model_name=model_embedding)
     if route == "general_chat":
-        return dispatch_llm_generation(question, "", model_embedding), ["route:general_chat", "direct_chat"]
+        return ollama_llm(question, "", model_embedding), ["route:general_chat", "direct_chat"]
     if route == "codebase_ast":
-        return dispatch_llm_generation(question, "Codebase architecture map", model_embedding), ["route:codebase_ast", "codebase_ast"]
+        return ollama_llm(question, "Codebase architecture map", model_embedding), ["route:codebase_ast", "codebase_ast"]
 
     if retriever is None:
         return "Error: Retriever is not initialized.", ["route:vector_search", "no_retriever"]
@@ -385,7 +427,7 @@ def run_crag_agent(
 
         if is_relevant:
             formatted_content = "\n\n".join(d.get("text", "") for d in relevant_docs if d.get("text"))
-            ans = dispatch_llm_generation(question, formatted_content, model_embedding)
+            ans = ollama_llm(question, formatted_content, model_embedding)
             trace.append("generate")
             return ans, trace
 
@@ -431,18 +473,15 @@ def ask_question(pdf_bytes, question, create_embeddings, reset_vectorstore, embe
         if retriever is None:
             return "Error: No valid documents were processed from the input."
     else:
-        print('preloaded')
-        if not embeddings_directory or not os.path.exists(embeddings_directory):
-            return f"Error: Embeddings directory '{embeddings_directory}' does not exist. Enable 'create embeddings' or provide valid path."
         try:
             text_splitter, vectorstore, retriever = load_embeddings(
-                model_embedding,
-                embeddings_directory,
-                chunk_size,
-                chunk_overlap
+                model_embedding=model_embedding,
+                persist_directory=embeddings_directory,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
             )
         except Exception as e:
-            return f"Error loading embeddings: {type(e).__name__}: {str(e)}"
+            return f"Error connecting to vector store: {type(e).__name__}: {str(e)}"
 
     if retriever is None:
         return "Error: Could not initialize vector retriever."

@@ -41,7 +41,7 @@ def grade_single_document(
         "User Question:\n\"\"\"{query}\"\"\"\n\n"
         "Give a binary score 'yes' or 'no' indicating whether the document contains information relevant to the question.\n"
         "Answer with ONLY 'yes' or 'no'."
-    ).format(doc_text=doc_text[:1500], query=query)
+    ).format(doc_text=doc_text[:4000], query=query)
 
     try:
         if client is None and Client is not None:
@@ -59,7 +59,7 @@ def grade_single_document(
                 else getattr(getattr(response, "message", None), "content", "")
             ).strip().lower()
 
-            return "yes" in raw
+            return bool("yes" in raw or "true" in raw or "relevant" in raw)
     except Exception as e:
         print(f"⚠️ Document grading error ({type(e).__name__}: {e}) - permissive fallback")
         return True

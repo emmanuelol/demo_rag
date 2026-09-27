@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Fallback local components
 from scripts.context_assembler import ZeroVRAMRetriever
+from scripts.llm_utils import ollama_llm
 
 
 def load_config() -> Dict[str, Any]:
@@ -47,8 +48,7 @@ class LocalLLMWrapper:
         self.provider_type = "local_ollama"
 
     def generate(self, prompt: str, context: str = "") -> str:
-        from run_rag import ollama_llm
-        return ollama_llm(prompt, context, self.model_name)
+        return ollama_llm(prompt, context, self.model_name, base_url=self.base_url)
 
     def __call__(self, prompt: str, context: str = "") -> str:
         return self.generate(prompt, context)
@@ -105,7 +105,10 @@ def get_llm_provider(deployment_env: Optional[str] = None) -> Any:
         except Exception as e:
             print(f"⚠️ [SRE Fallback] GCP LLM authentication failure ({type(e).__name__}: {e}).")
             print("   Gracefully degrading to Local Ollama provider (qwen2.5:7b-fenced).")
-            return get_llm_provider(deployment_env="local")
+            local_cfg = config.get("providers", {}).get("local", {})
+            model_name = local_cfg.get("llm", "qwen2.5:7b-fenced")
+            base_url = local_cfg.get("base_url", "http://ollama:11434")
+            return LocalLLMWrapper(model_name=model_name, base_url=base_url)
 
     # Local environment
     local_cfg = config.get("providers", {}).get("local", {})
@@ -121,6 +124,9 @@ def get_vector_provider(deployment_env: Optional[str] = None) -> Any:
     """
     env = (deployment_env or get_deployment_env()).lower()
     config = load_config()
+    local_cfg = config.get("providers", {}).get("local", {})
+    host = os.getenv("QDRANT_HOST", local_cfg.get("host", "qdrant"))
+    port = int(os.getenv("QDRANT_PORT", local_cfg.get("port", 6333)))
 
     if env == "gcp":
         try:
@@ -136,11 +142,7 @@ def get_vector_provider(deployment_env: Optional[str] = None) -> Any:
         except Exception as e:
             print(f"⚠️ [SRE Fallback] GCP Vector Search failure ({type(e).__name__}: {e}).")
             print("   Gracefully degrading to Local ZeroVRAMRetriever (Qdrant).")
-            return get_vector_provider(deployment_env="local")
+            return ZeroVRAMRetriever(qdrant_host=host, qdrant_port=port, threads=4)
 
     # Local environment: Zero-VRAM Qdrant + FastEmbed + FlashRank
-    local_cfg = config.get("providers", {}).get("local", {})
-    host = os.getenv("QDRANT_HOST", local_cfg.get("host", "qdrant"))
-    port = int(os.getenv("QDRANT_PORT", local_cfg.get("port", 6333)))
-
     return ZeroVRAMRetriever(qdrant_host=host, qdrant_port=port, threads=4)

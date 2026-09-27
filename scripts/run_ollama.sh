@@ -44,6 +44,8 @@ docker run --name $container_name -d --rm --privileged \
 --network=host --gpus all --shm-size 16G \
 -e DISPLAY=$DISPLAY -e QT_X11_NO_MITSHM=1 \
 -e OLLAMA_HOST="0.0.0.0" \
+-e OLLAMA_NUM_PARALLEL=1 \
+-e OLLAMA_MAX_LOADED_MODELS=1 \
 -v /tmp/.X11-unix:/tmp/.X11-unix  \
 -v $datasets_path:/datasets \
 -v $models_path:/models \

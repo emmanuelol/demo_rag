@@ -55,9 +55,6 @@ def route_query_heuristic(query: str) -> Optional[str]:
     return None
 
 
-    return None
-
-
 def route_query(
     query: str,
     model_name: Optional[str] = None,

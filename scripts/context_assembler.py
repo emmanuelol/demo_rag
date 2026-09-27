@@ -516,10 +516,6 @@ class ZeroVRAMRetriever:
         self.collection_name = collection_name
         self.threads = threads
 
-        # Enforce CPU thread fences
-        os.environ["OMP_NUM_THREADS"] = str(threads)
-        os.environ["MKL_NUM_THREADS"] = str(threads)
-
         if client is not None:
             self.client = client
         elif QdrantClient is not None:
@@ -535,6 +531,9 @@ class ZeroVRAMRetriever:
                 self.client = None
         else:
             self.client = None
+
+        # Pre-flight auto-creation to avoid cold-start 404 errors
+        self._ensure_collection_exists()
 
         if embedding_model is not None:
             self.embedding_model = embedding_model
@@ -558,6 +557,22 @@ class ZeroVRAMRetriever:
         else:
             self.reranker = None
 
+    def _ensure_collection_exists(self, vector_size: int = 384) -> bool:
+        """Pre-flight check: creates collection with Cosine distance if absent."""
+        if not self.client:
+            return False
+        try:
+            from qdrant_client.http import models as qmodels
+            existing = [c.name for c in self.client.get_collections().collections]
+            if self.collection_name not in existing:
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=qmodels.VectorParams(size=vector_size, distance=qmodels.Distance.COSINE)
+                )
+            return True
+        except Exception:
+            return False
+
     def embed_query(self, query: str) -> List[float]:
         """Embeds query on CPU using FastEmbed."""
         if not self.embedding_model:
@@ -578,6 +593,7 @@ class ZeroVRAMRetriever:
             return [{"id": "fallback", "text": "Qdrant unavailable; fallback triggered.", "score": 0.0, "metadata": {"error": "no_client"}}]
 
         try:
+            self._ensure_collection_exists()
             query_vector = self.embed_query(query)
             search_results = self.client.search(
                 collection_name=self.collection_name,

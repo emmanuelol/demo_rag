@@ -6,6 +6,8 @@ services:
       - OLLAMA_MODELS=${OLLAMA_MODELS:-qwen2.5:7b-instruct-q4_K_M}
       - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-4096}
       - OLLAMA_TEMPERATURE=${OLLAMA_TEMPERATURE:-0.2}
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
     ports:
       - "11434:11434"
     volumes:
@@ -55,7 +57,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/').read()"]
       interval: 10s
@@ -71,11 +73,14 @@ services:
       dockerfile: Dockerfile
     container_name: rag_client
     working_dir: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./:/app
       - ./entrypoint_rag.sh:/entrypoint_rag.sh
       - ${DATASETS_DIR:-./datasets}:/datasets
       - ${MODELS_DIR:-./models}:/models
+      - fastembed_cache:/root/.cache/fastembed
     environment:
       - BASE_URL=http://ollama:11434
       - QDRANT_HOST=qdrant
@@ -101,10 +106,13 @@ services:
       dockerfile: Dockerfile
     container_name: demo_rag_notebook
     working_dir: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8888:8888"
     volumes:
       - ./:/app
+      - fastembed_cache:/root/.cache/fastembed
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -124,5 +132,6 @@ services:
 volumes:
   ollama_data:
   qdrant_data:
+  fastembed_cache:
 
 
