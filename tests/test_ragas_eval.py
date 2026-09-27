@@ -262,8 +262,46 @@ def test_ragas_evaluation_matrix_scoring(capsys):
 
     print("-" * 78)
     print(f"MEAN EVALUATION SCORE: Context Precision={avg_precision:.2f} | Answer Relevance={avg_relevance:.2f}")
-    print("=" * 78 + "\n")
-
     # Assert quantitative quality gates
     assert avg_precision >= 0.70, f"Average Context Precision too low: {avg_precision}"
-    assert avg_relevance >= 0.70, f"Average Answer Relevance too low: {avg_relevance}"
+    assert avg_relevance >= 0.85, f"Average Answer Relevance too low: {avg_relevance}"
+
+
+def test_factory_local_and_gcp_fallback(monkeypatch):
+    """
+    Test 5: Verify Provider-Agnostic Factory defaults to Local Ollama/Qdrant
+    and gracefully degrades to Local when GCP credentials fail or are revoked.
+    """
+    from scripts.factory import get_llm_provider, get_vector_provider, LocalLLMWrapper
+
+    # Test Local initialization
+    local_llm = get_llm_provider("local")
+    assert isinstance(local_llm, LocalLLMWrapper)
+    assert local_llm.model_name == "qwen2.5:7b-fenced"
+
+    local_vec = get_vector_provider("local")
+    assert hasattr(local_vec, "retrieve_and_rerank")
+
+    # Test GCP degradation on missing/revoked credentials
+    monkeypatch.setenv("DEPLOYMENT_ENV", "gcp")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    gcp_llm = get_llm_provider("gcp")
+    assert isinstance(gcp_llm, LocalLLMWrapper), "GCP auth failure must safely degrade to LocalLLMWrapper"
+
+    gcp_vec = get_vector_provider("gcp")
+    assert hasattr(gcp_vec, "retrieve_and_rerank"), "GCP Vector failure must safely degrade to ZeroVRAMRetriever"
+
+
+def test_telemetry_safe_degradation():
+    """
+    Test 6: Verify setup_telemetry executes without throwing unhandled exceptions
+    when collector endpoint is unreachable or offline.
+    """
+    from run_rag import setup_telemetry
+    # Point to non-existent endpoint with 500ms timeout
+    success = setup_telemetry("http://127.0.0.1:59999")
+    # Must not raise exception regardless of whether telemetry exporter succeeds
+    assert isinstance(success, bool)
+

@@ -1,13 +1,29 @@
+deployment:
+  environment: 'local'  # Toggle: 'local' (Ollama + Qdrant) or 'gcp' (Vertex AI + Cloud Vector Search)
+
+providers:
+  local:
+    llm: 'qwen2.5:7b-fenced'
+    base_url: 'http://ollama:11434'
+    vector_store: 'qdrant'
+    host: 'qdrant'
+    port: 6333
+  gcp:
+    llm: 'gemini-1.5-pro'
+    vector_store: 'vertex_ai'
+    project_id: '${GCP_PROJECT_ID}'
+    location: 'us-central1'
+
 models:
-  embedding: 'deepseek-r1:1.5b'
-  inference: 'deepseek-r1:1.5b'
+  embedding: 'BAAI/bge-small-en-v1.5'
+  inference: 'qwen2.5:7b-fenced'
+
 path:
-  embeddings: '/datasets/deepseek-r1'
+  embeddings: '/datasets/qdrant'
   pdfs: '/datasets/packt'
-  #pdfs: None
+
 parameters:
-  create_embeddings: False
-  reset_embeddings: False
+  create_embeddings: false
+  reset_embeddings: false
   chunk_size: 500
   chunk_overlap: 100
-  

@@ -53,6 +53,39 @@ from scripts.router import route_query
 from scripts.grader import grade_documents, rewrite_query
 
 
+def setup_telemetry(endpoint: Optional[str] = None) -> bool:
+    """
+    Initializes non-blocking OpenTelemetry instrumentation for LangChain/LangGraph with Phoenix.
+    Enforces a strict 500ms timeout on the OTLP exporter to prevent blocking the event loop.
+    """
+    endpoint = endpoint or os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006")
+    try:
+        from openinference.instrumentation.langchain import LangChainInstrumentor
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+        exporter = OTLPSpanExporter(
+            endpoint=f"{endpoint.rstrip('/')}/v1/traces",
+            timeout=float(os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT", "500")) / 1000.0  # 500ms
+        )
+        provider = TracerProvider()
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+        LangChainInstrumentor().instrument()
+        print(f"📡 Telemetry initialized with non-blocking exporter targeting {endpoint} (timeout: 500ms)")
+        return True
+    except Exception as e:
+        # Chaos guard: Never block execution if telemetry collector is unavailable
+        return False
+
+
+# Attempt telemetry initialization at module load
+setup_telemetry()
+
+
+
 
 
 def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
