@@ -2,9 +2,9 @@ name: Agentic RAG Evaluation & Chaos Gate
 
 on:
   push:
-    branches: [ emmanuel_branch, main ]
+    branches: [ emmanuel_branch, main, demo_rag_3, "demo_rag*" ]
   pull_request:
-    branches: [ emmanuel_branch, main ]
+    branches: [ emmanuel_branch, main, demo_rag_3, "demo_rag*" ]
 
 jobs:
   rag-evaluation:

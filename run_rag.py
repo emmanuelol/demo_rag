@@ -187,6 +187,19 @@ def ollama_llm(question, context, model_embedding):
         return f"Error: LLM service unreachable or request failed ({type(e).__name__}: {str(e)})"
 
 
+def dispatch_llm_generation(prompt: str, context: str = "", model_embedding: str = "qwen2.5:7b-fenced") -> str:
+    """
+    Executes generation through the provider-agnostic factory.
+    Gracefully falls back to ollama_llm on any initialization or invocation exception.
+    """
+    try:
+        from scripts.factory import get_llm_provider
+        provider = get_llm_provider()
+        return provider.generate(prompt, context)
+    except Exception:
+        return ollama_llm(prompt, context, model_embedding)
+
+
 class AgentState(TypedDict):
     question: str
     search_query: str
@@ -211,16 +224,17 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
         return {"route": route, "trace": state.get("trace", []) + [f"route:{route}"]}
 
     def direct_chat_node(state: AgentState) -> dict:
-        ans = ollama_llm(state["question"], context="", model_embedding=model_embedding)
+        ans = dispatch_llm_generation(state["question"], context="", model_embedding=model_embedding)
         return {"generation": ans, "trace": state.get("trace", []) + ["direct_chat"]}
 
     def codebase_ast_node(state: AgentState) -> dict:
         summary_ctx = (
             "Repository architecture comprises modular services: "
             "Semantic Router (scripts/router.py), Retrieval Grader (scripts/grader.py), "
-            "ZeroVRAMRetriever (scripts/context_assembler.py), and LangGraph State Machine (run_rag.py)."
+            "ZeroVRAMRetriever (scripts/context_assembler.py), Provider Factory (scripts/factory.py), "
+            "and LangGraph State Machine (run_rag.py)."
         )
-        ans = ollama_llm(state["question"], context=summary_ctx, model_embedding=model_embedding)
+        ans = dispatch_llm_generation(state["question"], context=summary_ctx, model_embedding=model_embedding)
         return {"generation": ans, "trace": state.get("trace", []) + ["codebase_ast"]}
 
     def retrieve_node(state: AgentState) -> dict:
@@ -259,7 +273,7 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
     def generate_node(state: AgentState) -> dict:
         docs = state.get("documents", [])
         formatted_content = "\n\n".join(d.get("text", "") for d in docs if d.get("text"))
-        ans = ollama_llm(state["question"], formatted_content, model_embedding)
+        ans = dispatch_llm_generation(state["question"], formatted_content, model_embedding)
         return {"generation": ans, "trace": state.get("trace", []) + ["generate"]}
 
     def fallback_node(state: AgentState) -> dict:
@@ -346,9 +360,9 @@ def run_crag_agent(
     # Deterministic fallback loop if StateGraph is unavailable
     route = route_query(question, model_name=model_embedding)
     if route == "general_chat":
-        return ollama_llm(question, "", model_embedding), ["route:general_chat", "direct_chat"]
+        return dispatch_llm_generation(question, "", model_embedding), ["route:general_chat", "direct_chat"]
     if route == "codebase_ast":
-        return ollama_llm(question, "Codebase architecture map", model_embedding), ["route:codebase_ast", "codebase_ast"]
+        return dispatch_llm_generation(question, "Codebase architecture map", model_embedding), ["route:codebase_ast", "codebase_ast"]
 
     if retriever is None:
         return "Error: Retriever is not initialized.", ["route:vector_search", "no_retriever"]
@@ -371,7 +385,7 @@ def run_crag_agent(
 
         if is_relevant:
             formatted_content = "\n\n".join(d.get("text", "") for d in relevant_docs if d.get("text"))
-            ans = ollama_llm(question, formatted_content, model_embedding)
+            ans = dispatch_llm_generation(question, formatted_content, model_embedding)
             trace.append("generate")
             return ans, trace
 
