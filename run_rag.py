@@ -5,13 +5,42 @@ import re
 from time import sleep
 import yaml
 
-import gradio as gr
-from langchain_chroma import Chroma
-from langchain_community.document_loaders import PyPDFDirectoryLoader, PyPDFLoader
-from langchain_ollama import ChatOllama, OllamaEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-import ollama
-from ollama import ChatResponse, Client, chat
+try:
+    import gradio as gr
+except ImportError:
+    gr = None
+
+try:
+    from langchain_chroma import Chroma
+except ImportError:
+    Chroma = None
+
+try:
+    from langchain_community.document_loaders import PyPDFDirectoryLoader, PyPDFLoader
+except ImportError:
+    PyPDFDirectoryLoader = None
+    PyPDFLoader = None
+
+try:
+    from langchain_ollama import ChatOllama, OllamaEmbeddings
+except ImportError:
+    ChatOllama = None
+    OllamaEmbeddings = None
+
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    RecursiveCharacterTextSplitter = None
+
+try:
+    import ollama
+    from ollama import ChatResponse, Client, chat
+except ImportError:
+    ollama = None
+    Client = None
+    chat = None
+    ChatResponse = None
+
 
 
 def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
@@ -85,13 +114,20 @@ def ollama_llm(question, context, model_embedding):
     formatted_prompt = f"Question: {question}\n\nContext: {context}"
     base_url = os.getenv('BASE_URL', 'http://ollama:11434')
     timeout = float(os.getenv('OLLAMA_TIMEOUT', '60.0'))
+    num_ctx = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
+    temperature = float(os.getenv('OLLAMA_TEMPERATURE', '0.2'))
 
     try:
         client = Client(host=base_url, timeout=timeout)
         response = client.chat(
             model=model_embedding,
             messages=[{"role": "user", "content": formatted_prompt}],
+            options={
+                "num_ctx": num_ctx,
+                "temperature": temperature,
+            },
         )
+
         response_content = (
             response.get("message", {}).get("content", "")
             if isinstance(response, dict)
@@ -110,12 +146,19 @@ def rag_chain(question, text_splitter, retriever, model_embedding):
     if retriever is None:
         return "Error: Retriever is not initialized."
     try:
-        retrieved_docs = retriever.invoke(question)
+        if hasattr(retriever, "retrieve_and_rerank"):
+            reranked_docs = retriever.retrieve_and_rerank(question, retrieve_limit=20, rerank_top_k=5)
+            formatted_content = "\n\n".join(d.get("text", "") for d in reranked_docs if d.get("text"))
+        elif hasattr(retriever, "invoke"):
+            retrieved_docs = retriever.invoke(question)
+            formatted_content = combine_docs(retrieved_docs) if retrieved_docs else ""
+        else:
+            return "Error: Unsupported retriever interface."
     except Exception as e:
         return f"Error: Vector retrieval failed ({type(e).__name__}: {str(e)})"
 
-    formatted_content = combine_docs(retrieved_docs) if retrieved_docs else ""
     return ollama_llm(question, formatted_content, model_embedding)
+
 
 
 def ask_question(pdf_bytes, question, create_embeddings, reset_vectorstore, embeddings_directory, model_embedding, chunk_size, chunk_overlap):

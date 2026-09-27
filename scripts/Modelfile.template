@@ -1,0 +1,4 @@
+FROM ${OLLAMA_BASE_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+
+PARAMETER num_ctx ${OLLAMA_NUM_CTX:-4096}
+PARAMETER temperature ${OLLAMA_TEMPERATURE:-0.2}

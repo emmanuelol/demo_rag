@@ -1,14 +1,46 @@
 #!/usr/bin/env python3
 """
-Context Assembler - Builds targeted LLM context from the repository graph.
+Context Assembler - Builds targeted LLM context from the repository graph
+and provides Zero-VRAM CPU Hybrid Retrieval with FastEmbed, Qdrant, and FlashRank.
 Supports multi-level dependency traversal, token budgeting, and impact analysis.
 """
 
 import os
+import sys
 import json
 import argparse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, List, Dict
+
+# Explicit CPU thread fences to prevent Ryzen 7 thread starvation
+os.environ.setdefault("OMP_NUM_THREADS", "4")
+os.environ.setdefault("MKL_NUM_THREADS", "4")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "4")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "4")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "4")
+
+import yaml
+
+try:
+    from fastembed import TextEmbedding
+except ImportError:
+    TextEmbedding = None
+
+try:
+    from flashrank import Ranker, RerankRequest
+except ImportError:
+    Ranker = None
+    class RerankRequest:
+        def __init__(self, query: str, passages: list):
+            self.query = query
+            self.passages = passages
+
+try:
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models as qmodels
+except ImportError:
+    QdrantClient = None
+    qmodels = None
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -16,6 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MAX_DEPTH = 2          # How many levels of callers/callees to traverse
 DEFAULT_TOKEN_BUDGET = 80000   # Approximate token budget (chars / 4)
 CHARS_PER_TOKEN = 4
+
 
 
 # ============================================================
@@ -424,10 +457,205 @@ def _get_markdown_language(filepath: str) -> str:
 
 
 # ============================================================
+# ZERO-VRAM HYBRID RETRIEVAL (CPU FastEmbed + Qdrant + FlashRank)
+# ============================================================
+
+def parse_memory_frontmatter(content: str) -> dict:
+    """
+    Parses YAML frontmatter from markdown documents (e.g. memory.md).
+    Raises ValueError on malformed or unclosed frontmatter delimiters.
+    """
+    if not content or not content.strip().startswith("---"):
+        return {"metadata": {}, "body": content or ""}
+
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return {"metadata": {}, "body": content}
+
+    closing_index = -1
+    for idx, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing_index = idx
+            break
+
+    if closing_index == -1:
+        raise ValueError("Malformed YAML frontmatter: unclosed delimiter '---'")
+
+    frontmatter_raw = "".join(lines[1:closing_index])
+    body = "".join(lines[closing_index + 1:]).lstrip("\n")
+
+    try:
+        metadata = yaml.safe_load(frontmatter_raw)
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError(f"Malformed YAML frontmatter: expected dict mapping, got {type(metadata).__name__}")
+        return {"metadata": metadata or {}, "body": body}
+    except yaml.YAMLError as exc:
+        raise ValueError(f"Malformed YAML frontmatter: {exc}") from exc
+
+
+class ZeroVRAMRetriever:
+    """
+    Zero-VRAM Hybrid Retrieval Engine.
+    Executes dense embeddings and reranking exclusively on host CPU (capped at threads=4)
+    and queries Qdrant Vector DB (bounded at 4GB RAM) with idempotency and fallback handling.
+    """
+    def __init__(
+        self,
+        qdrant_host: str = "qdrant",
+        qdrant_port: int = 6333,
+        collection_name: str = "demo_rag_collection",
+        embedding_model_name: str = "BAAI/bge-small-en-v1.5",
+        reranker_model_name: str = "ms-marco-TinyBERT-L-2-v2",
+        threads: int = 4,
+        client: Optional[Any] = None,
+        embedding_model: Optional[Any] = None,
+        reranker: Optional[Any] = None
+    ):
+        self.qdrant_host = os.getenv("QDRANT_HOST", qdrant_host)
+        self.qdrant_port = int(os.getenv("QDRANT_PORT", str(qdrant_port)))
+        self.collection_name = collection_name
+        self.threads = threads
+
+        # Enforce CPU thread fences
+        os.environ["OMP_NUM_THREADS"] = str(threads)
+        os.environ["MKL_NUM_THREADS"] = str(threads)
+
+        if client is not None:
+            self.client = client
+        elif QdrantClient is not None:
+            try:
+                self.client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port, timeout=5.0)
+            except Exception as e:
+                print(f"⚠️ Qdrant client connection failed: {e}")
+                self.client = None
+        else:
+            self.client = None
+
+        if embedding_model is not None:
+            self.embedding_model = embedding_model
+        elif TextEmbedding is not None:
+            try:
+                self.embedding_model = TextEmbedding(model_name=embedding_model_name, threads=threads)
+            except Exception as e:
+                print(f"⚠️ FastEmbed initialization warning: {e}")
+                self.embedding_model = None
+        else:
+            self.embedding_model = None
+
+        if reranker is not None:
+            self.reranker = reranker
+        elif Ranker is not None:
+            try:
+                self.reranker = Ranker(model_name=reranker_model_name)
+            except Exception as e:
+                print(f"⚠️ FlashRank initialization warning: {e}")
+                self.reranker = None
+        else:
+            self.reranker = None
+
+    def embed_query(self, query: str) -> List[float]:
+        """Embeds query on CPU using FastEmbed."""
+        if not self.embedding_model:
+            raise RuntimeError("FastEmbed embedding model unavailable.")
+        embeddings = list(self.embedding_model.embed([query]))
+        emb = embeddings[0]
+        return emb.tolist() if hasattr(emb, "tolist") else list(emb)
+
+    def retrieve_candidates(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Retrieves top-20 candidates from Qdrant.
+        Gracefully catches 500 errors, timeouts, and network issues.
+        """
+        if not query or not query.strip():
+            return []
+
+        if not self.client:
+            return [{"id": "fallback", "text": "Qdrant unavailable; fallback triggered.", "score": 0.0, "metadata": {"error": "no_client"}}]
+
+        try:
+            query_vector = self.embed_query(query)
+            search_results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                limit=limit
+            )
+            candidates = []
+            for r in search_results:
+                payload = getattr(r, "payload", {}) or {}
+                text = payload.get("text", payload.get("page_content", ""))
+                candidates.append({
+                    "id": getattr(r, "id", None),
+                    "text": text,
+                    "score": getattr(r, "score", 0.0),
+                    "metadata": payload
+                })
+            return candidates
+        except Exception as e:
+            # Handles Qdrant 500 error / timeout / connection failure
+            print(f"⚠️ Qdrant retrieval failure ({type(e).__name__}: {e}) - executing fallback response")
+            return [{
+                "id": "fallback",
+                "text": f"Fallback context: Qdrant service unavailable ({type(e).__name__}).",
+                "score": 0.0,
+                "metadata": {
+                    "fallback": True,
+                    "error": f"{type(e).__name__}: {str(e)}",
+                    "error_type": type(e).__name__
+                }
+            }]
+
+
+    def rerank(self, query: str, candidates: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Reranks candidates to top-5 on CPU using FlashRank.
+        """
+        if not candidates:
+            return []
+
+        # If only fallback exists, return it directly
+        if len(candidates) == 1 and candidates[0].get("id") == "fallback":
+            return candidates
+
+        if not self.reranker:
+            return candidates[:top_k]
+
+        try:
+            passages = [
+                {"id": c.get("id"), "text": c.get("text", ""), "meta": c.get("metadata", {})}
+                for c in candidates
+            ]
+            rerank_request = RerankRequest(query=query, passages=passages)
+            reranked = self.reranker.rerank(rerank_request)
+            results = []
+            for item in reranked[:top_k]:
+                results.append({
+                    "id": item.get("id"),
+                    "text": item.get("text"),
+                    "score": item.get("score"),
+                    "metadata": item.get("meta", {})
+                })
+            return results
+        except Exception as e:
+            print(f"⚠️ FlashRank reranking error ({type(e).__name__}: {e}) - fallback to raw top_k")
+            return candidates[:top_k]
+
+    def retrieve_and_rerank(self, query: str, retrieve_limit: int = 20, rerank_top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        End-to-end CPU pipeline:
+        1. Embeds query on CPU (FastEmbed, threads=4)
+        2. Retrieves top-20 from Qdrant
+        3. Reranks to top-5 on CPU (FlashRank)
+        """
+        candidates = self.retrieve_candidates(query, limit=retrieve_limit)
+        return self.rerank(query, candidates, top_k=rerank_top_k)
+
+
+# ============================================================
 # CLI
 # ============================================================
 
 if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(
         description="Context Assembler - Build targeted LLM context from repo graph",
         formatter_class=argparse.RawDescriptionHelpFormatter,

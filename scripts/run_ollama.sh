@@ -40,19 +40,37 @@ done
 #-v $models_path:/models \
 #-v $dir_path:/app $image_name 
 
-docker run --name $container_name -d -it --rm --privileged \
+docker run --name $container_name -d --rm --privileged \
 --network=host --gpus all --shm-size 16G \
 -e DISPLAY=$DISPLAY -e QT_X11_NO_MITSHM=1 \
 -e OLLAMA_HOST="0.0.0.0" \
 -v /tmp/.X11-unix:/tmp/.X11-unix  \
 -v $datasets_path:/datasets \
 -v $models_path:/models \
--v $dir_path:/app $image_name 
+-v $dir_path:/app $image_name
 
+# Wait for Ollama to become responsive
+echo "Waiting for Ollama container to be responsive..."
+docker exec $container_name bash -c "until curl -s http://127.0.0.1:11434 > /dev/null; do sleep 2; done"
 
-#VAR1='jupyter lab --allow-root --no-browser --port='
-#cmd="${VAR1}${port}"
+# Build and verify fenced model with parameterized context and temperature
+echo "Configuring fenced model qwen2.5:7b-fenced..."
+docker exec $container_name ollama pull ${OLLAMA_BASE_MODEL:-qwen2.5:7b-instruct-q4_K_M}
 
+docker exec $container_name bash -c '
+    NUM_CTX=${OLLAMA_NUM_CTX:-4096}
+    TEMP=${OLLAMA_TEMPERATURE:-0.2}
+    BASE_MODEL=${OLLAMA_BASE_MODEL:-"qwen2.5:7b-instruct-q4_K_M"}
+    if [ -f "/app/Modelfile.template" ]; then
+        sed -e "s|\${OLLAMA_BASE_MODEL:-[^}]*}|$BASE_MODEL|g" \
+            -e "s|\${OLLAMA_NUM_CTX:-[^}]*}|$NUM_CTX|g" \
+            -e "s|\${OLLAMA_TEMPERATURE:-[^}]*}|$TEMP|g" \
+            /app/Modelfile.template > /tmp/Modelfile.rendered
+        ollama create qwen2.5:7b-fenced -f /tmp/Modelfile.rendered
+    else
+        ollama create qwen2.5:7b-fenced -f /app/Modelfile
+    fi
+'
+echo "🟢 Fenced model qwen2.5:7b-fenced ready."
 
-#docker exec -it $container_name bash -c export OLLAMA_HOST=127.0.0.1:11435
 docker exec -it $container_name bash
