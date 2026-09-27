@@ -524,7 +524,12 @@ class ZeroVRAMRetriever:
             self.client = client
         elif QdrantClient is not None:
             try:
-                self.client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port, timeout=5.0)
+                self.client = QdrantClient(
+                    host=self.qdrant_host,
+                    port=self.qdrant_port,
+                    timeout=5.0,
+                    check_compatibility=False
+                )
             except Exception as e:
                 print(f"⚠️ Qdrant client connection failed: {e}")
                 self.client = None
