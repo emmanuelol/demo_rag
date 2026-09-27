@@ -5,6 +5,8 @@ import re
 from time import sleep
 import yaml
 
+from typing import TypedDict, List, Dict, Any, Optional, Tuple
+
 try:
     import gradio as gr
 except ImportError:
@@ -40,6 +42,16 @@ except ImportError:
     Client = None
     chat = None
     ChatResponse = None
+
+try:
+    from langgraph.graph import StateGraph, END
+except ImportError:
+    StateGraph = None
+    END = None
+
+from scripts.router import route_query
+from scripts.grader import grade_documents, rewrite_query
+
 
 
 
@@ -142,22 +154,210 @@ def ollama_llm(question, context, model_embedding):
         return f"Error: LLM service unreachable or request failed ({type(e).__name__}: {str(e)})"
 
 
-def rag_chain(question, text_splitter, retriever, model_embedding):
-    if retriever is None:
-        return "Error: Retriever is not initialized."
-    try:
-        if hasattr(retriever, "retrieve_and_rerank"):
-            reranked_docs = retriever.retrieve_and_rerank(question, retrieve_limit=20, rerank_top_k=5)
-            formatted_content = "\n\n".join(d.get("text", "") for d in reranked_docs if d.get("text"))
-        elif hasattr(retriever, "invoke"):
-            retrieved_docs = retriever.invoke(question)
-            formatted_content = combine_docs(retrieved_docs) if retrieved_docs else ""
-        else:
-            return "Error: Unsupported retriever interface."
-    except Exception as e:
-        return f"Error: Vector retrieval failed ({type(e).__name__}: {str(e)})"
+class AgentState(TypedDict):
+    question: str
+    search_query: str
+    route: str
+    documents: List[Dict[str, Any]]
+    is_relevant: bool
+    generation: str
+    retry_count: int
+    max_retries: int
+    trace: List[str]
 
-    return ollama_llm(question, formatted_content, model_embedding)
+
+def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2):
+    """
+    Constructs the Corrective RAG (CRAG) state machine with a hard recursion limit.
+    """
+    if StateGraph is None:
+        return None
+
+    def route_node(state: AgentState) -> dict:
+        route = route_query(state["question"], model_name=model_embedding)
+        return {"route": route, "trace": state.get("trace", []) + [f"route:{route}"]}
+
+    def direct_chat_node(state: AgentState) -> dict:
+        ans = ollama_llm(state["question"], context="", model_embedding=model_embedding)
+        return {"generation": ans, "trace": state.get("trace", []) + ["direct_chat"]}
+
+    def codebase_ast_node(state: AgentState) -> dict:
+        summary_ctx = (
+            "Repository architecture comprises modular services: "
+            "Semantic Router (scripts/router.py), Retrieval Grader (scripts/grader.py), "
+            "ZeroVRAMRetriever (scripts/context_assembler.py), and LangGraph State Machine (run_rag.py)."
+        )
+        ans = ollama_llm(state["question"], context=summary_ctx, model_embedding=model_embedding)
+        return {"generation": ans, "trace": state.get("trace", []) + ["codebase_ast"]}
+
+    def retrieve_node(state: AgentState) -> dict:
+        q = state.get("search_query") or state["question"]
+        docs = []
+        if retriever is not None:
+            try:
+                if hasattr(retriever, "retrieve_and_rerank"):
+                    docs = retriever.retrieve_and_rerank(q, retrieve_limit=20, rerank_top_k=5)
+                elif hasattr(retriever, "invoke"):
+                    raw = retriever.invoke(q)
+                    docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(raw)]
+            except Exception as e:
+                print(f"⚠️ Vector retrieval failure: {e}")
+                docs = [{"id": "fallback", "text": f"Retrieval error: {e}", "metadata": {"error": str(e)}}]
+        return {"documents": docs, "trace": state.get("trace", []) + [f"retrieve:{len(docs)}"]}
+
+    def grade_node(state: AgentState) -> dict:
+        docs = state.get("documents", [])
+        is_relevant, relevant_docs = grade_documents(state["question"], docs, model_name=model_embedding)
+        return {
+            "is_relevant": is_relevant,
+            "documents": relevant_docs,
+            "trace": state.get("trace", []) + [f"grade:{is_relevant}"]
+        }
+
+    def rewrite_node(state: AgentState) -> dict:
+        retries = state.get("retry_count", 0) + 1
+        rewritten = rewrite_query(state["question"], model_name=model_embedding)
+        return {
+            "search_query": rewritten,
+            "retry_count": retries,
+            "trace": state.get("trace", []) + [f"rewrite:{retries}"]
+        }
+
+    def generate_node(state: AgentState) -> dict:
+        docs = state.get("documents", [])
+        formatted_content = "\n\n".join(d.get("text", "") for d in docs if d.get("text"))
+        ans = ollama_llm(state["question"], formatted_content, model_embedding)
+        return {"generation": ans, "trace": state.get("trace", []) + ["generate"]}
+
+    def fallback_node(state: AgentState) -> dict:
+        msg = "I could not find sufficient relevant context in the provided documents to answer your question accurately."
+        return {"generation": msg, "trace": state.get("trace", []) + ["fallback_exhausted"]}
+
+    builder = StateGraph(AgentState)
+    builder.add_node("route_node", route_node)
+    builder.add_node("direct_chat_node", direct_chat_node)
+    builder.add_node("codebase_ast_node", codebase_ast_node)
+    builder.add_node("retrieve_node", retrieve_node)
+    builder.add_node("grade_node", grade_node)
+    builder.add_node("rewrite_node", rewrite_node)
+    builder.add_node("generate_node", generate_node)
+    builder.add_node("fallback_node", fallback_node)
+
+    builder.set_entry_point("route_node")
+
+    def route_decision(s: AgentState) -> str:
+        r = s.get("route", "vector_search")
+        if r == "general_chat":
+            return "direct_chat_node"
+        elif r == "codebase_ast":
+            return "codebase_ast_node"
+        return "retrieve_node"
+
+    builder.add_conditional_edges("route_node", route_decision, {
+        "direct_chat_node": "direct_chat_node",
+        "codebase_ast_node": "codebase_ast_node",
+        "retrieve_node": "retrieve_node"
+    })
+
+    builder.add_edge("direct_chat_node", END)
+    builder.add_edge("codebase_ast_node", END)
+    builder.add_edge("retrieve_node", "grade_node")
+
+    def grade_decision(s: AgentState) -> str:
+        if s.get("is_relevant"):
+            return "generate_node"
+        elif s.get("retry_count", 0) < s.get("max_retries", max_retries):
+            return "rewrite_node"
+        return "fallback_node"
+
+    builder.add_conditional_edges("grade_node", grade_decision, {
+        "generate_node": "generate_node",
+        "rewrite_node": "rewrite_node",
+        "fallback_node": "fallback_node"
+    })
+
+    builder.add_edge("rewrite_node", "retrieve_node")
+    builder.add_edge("generate_node", END)
+    builder.add_edge("fallback_node", END)
+
+    return builder.compile()
+
+
+def run_crag_agent(
+    question: str,
+    retriever: Any,
+    model_embedding: str,
+    max_retries: int = 2
+) -> Tuple[str, List[str]]:
+    """
+    Executes the self-correcting CRAG graph.
+    Returns (generation_text, execution_trace).
+    """
+    graph = build_crag_graph(retriever, model_embedding, max_retries=max_retries)
+
+    if graph is not None:
+        initial_state: AgentState = {
+            "question": question,
+            "search_query": question,
+            "route": "vector_search",
+            "documents": [],
+            "is_relevant": False,
+            "generation": "",
+            "retry_count": 0,
+            "max_retries": max_retries,
+            "trace": []
+        }
+        final_state = graph.invoke(initial_state)
+        return final_state.get("generation", ""), final_state.get("trace", [])
+
+    # Deterministic fallback loop if StateGraph is unavailable
+    route = route_query(question, model_name=model_embedding)
+    if route == "general_chat":
+        return ollama_llm(question, "", model_embedding), ["route:general_chat", "direct_chat"]
+    if route == "codebase_ast":
+        return ollama_llm(question, "Codebase architecture map", model_embedding), ["route:codebase_ast", "codebase_ast"]
+
+    if retriever is None:
+        return "Error: Retriever is not initialized.", ["route:vector_search", "no_retriever"]
+
+    retries = 0
+    search_q = question
+    trace = [f"route:{route}"]
+
+    while retries <= max_retries:
+        if hasattr(retriever, "retrieve_and_rerank"):
+            docs = retriever.retrieve_and_rerank(search_q, retrieve_limit=20, rerank_top_k=5)
+        elif hasattr(retriever, "invoke"):
+            docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(retriever.invoke(search_q))]
+        else:
+            return "Error: Unsupported retriever interface.", trace
+
+        trace.append(f"retrieve:{len(docs)}")
+        is_relevant, relevant_docs = grade_documents(question, docs, model_name=model_embedding)
+        trace.append(f"grade:{is_relevant}")
+
+        if is_relevant:
+            formatted_content = "\n\n".join(d.get("text", "") for d in relevant_docs if d.get("text"))
+            ans = ollama_llm(question, formatted_content, model_embedding)
+            trace.append("generate")
+            return ans, trace
+
+        retries += 1
+        if retries <= max_retries:
+            search_q = rewrite_query(question, model_name=model_embedding)
+            trace.append(f"rewrite:{retries}")
+
+    trace.append("fallback_exhausted")
+    return "I could not find sufficient relevant context in the provided documents to answer your question accurately.", trace
+
+
+def rag_chain(question, text_splitter, retriever, model_embedding):
+    """
+    CRAG pipeline entrypoint preserving polymorphic caller contracts.
+    """
+    generation, _ = run_crag_agent(question, retriever, model_embedding, max_retries=2)
+    return generation
+
 
 
 
