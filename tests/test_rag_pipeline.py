@@ -315,3 +315,92 @@ def test_qdrant_universal_healthcheck_command():
     assert "6333" in cmd_str
 
 
+# ============================================================
+# SRE & CHAOS TESTS: GRADIO CLEANUP & CACHE ALIGNMENT
+# ============================================================
+
+def test_gradio_temporary_file_active_cleanup(tmp_path, monkeypatch):
+    """
+    SRE Test: Verify cleanup_temporary_files deletes temporary upload artifacts
+    and prunes empty parent directories inside tempdir, without touching external files.
+    """
+    import tempfile
+    from run_rag import cleanup_temporary_files
+
+    # 1. Create a simulated Gradio upload inside system tempdir
+    temp_base = Path(tempfile.gettempdir())
+    gradio_temp_dir = temp_base / "gradio" / "session_test_upload"
+    gradio_temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_pdf = gradio_temp_dir / "uploaded_doc.pdf"
+    temp_pdf.write_text("dummy pdf binary content", encoding="utf-8")
+
+    assert temp_pdf.exists()
+
+    # 2. Create external safe file (should NOT be unlinked)
+    safe_file = tmp_path / "permanent_doc.pdf"
+    safe_file.write_text("permanent content", encoding="utf-8")
+
+    # Execute cleanup
+    cleanup_temporary_files([str(temp_pdf), str(safe_file)])
+
+    # Verify temp file and empty parent directory were purged
+    assert not temp_pdf.exists(), "Temporary PDF must be deleted"
+    assert not gradio_temp_dir.exists(), "Empty temporary upload directory must be pruned"
+
+    # Verify safe file was untouched
+    assert safe_file.exists(), "Safe external file must not be deleted"
+
+
+def test_process_pdf_cleanup_on_loader_exception(monkeypatch):
+    """
+    Chaos Test: Verify that if PyPDFLoader raises an unhandled exception on a malformed PDF,
+    the try...finally guard in process_pdf guarantees temporary files are still garbage-collected.
+    """
+    import tempfile
+    from run_rag import process_pdf
+
+    temp_base = Path(tempfile.gettempdir())
+    leak_test_dir = temp_base / "gradio" / "corrupt_test_dir"
+    leak_test_dir.mkdir(parents=True, exist_ok=True)
+    corrupted_pdf = leak_test_dir / "corrupted.pdf"
+    corrupted_pdf.write_text("%PDF-malformed-stream", encoding="utf-8")
+
+    class MockFailingLoader:
+        def __init__(self, file_path):
+            self.file_path = file_path
+        def load(self):
+            raise RuntimeError("PDFSyntaxError: Malformed PDF stream corrupt")
+
+    monkeypatch.setattr("run_rag.PyPDFLoader", MockFailingLoader)
+
+    with pytest.raises(RuntimeError, match="PDFSyntaxError"):
+        process_pdf(
+            pdf_source=[str(corrupted_pdf)],
+            model_embedding="qwen2.5:7b-fenced",
+            persist_directory="/tmp/test_persist",
+            chunk_size=500,
+            chunk_overlap=100
+        )
+
+    # File must be deleted despite unhandled exception
+    assert not corrupted_pdf.exists(), "Corrupted temporary file must be unlinked in finally block"
+    assert not leak_test_dir.exists(), "Empty parent temp directory must be pruned in finally block"
+
+
+def test_docker_compose_cache_alignment_config():
+    """
+    Verify docker-compose.yaml mounts FastEmbed cache using the configurable
+    ${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed pattern
+    across client and notebook services to enable bare metal host-to-container alignment.
+    """
+    compose_path = REPO_ROOT / "docker-compose.yaml"
+    compose_text = compose_path.read_text(encoding="utf-8")
+
+    expected_volume = "${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed"
+
+    assert compose_text.count(expected_volume) == 2, (
+        f"Expected {expected_volume} to appear in both client and notebook services in docker-compose.yaml"
+    )
+
+
+

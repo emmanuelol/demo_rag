@@ -80,7 +80,7 @@ services:
       - ./entrypoint_rag.sh:/entrypoint_rag.sh
       - ${DATASETS_DIR:-./datasets}:/datasets
       - ${MODELS_DIR:-./models}:/models
-      - fastembed_cache:/root/.cache/fastembed
+      - ${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed
     environment:
       - BASE_URL=http://ollama:11434
       - QDRANT_HOST=qdrant
@@ -113,7 +113,7 @@ services:
       - "8888:8888"
     volumes:
       - ./:/app
-      - fastembed_cache:/root/.cache/fastembed
+      - ${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333

@@ -3,6 +3,7 @@ import argparse
 import os
 import re
 import tempfile
+from pathlib import Path
 from time import sleep
 import yaml
 
@@ -138,6 +139,39 @@ def dispatch_llm_generation(prompt: str, context: str = "", model_embedding: str
         return ollama_llm(prompt, context, model_embedding)
 
 
+def cleanup_temporary_files(file_paths: list) -> None:
+    """
+    Chaos/SRE Guard: Actively unlinks temporary uploaded PDF artifacts and prunes
+    empty temporary parent directories created by Gradio to prevent disk starvation
+    and inode exhaustion over extended testing sessions.
+    """
+    import tempfile
+    temp_dir = os.path.abspath(tempfile.gettempdir())
+
+    for path in file_paths:
+        try:
+            norm_path = os.path.abspath(str(path))
+            path_obj = Path(norm_path)
+            parts = [p.lower() for p in path_obj.parts]
+            is_gradio_temp = (
+                ("gradio" in parts or ".gradio" in parts) and
+                (norm_path.startswith(temp_dir) or ".gradio" in parts)
+            )
+            if is_gradio_temp and os.path.exists(norm_path) and os.path.isfile(norm_path):
+                parent_dir = os.path.dirname(norm_path)
+                os.unlink(norm_path)
+                # Prune parent directory if empty and isolated within gradio temp dir
+                parent_parts = [p.lower() for p in Path(parent_dir).parts]
+                if parent_dir.startswith(temp_dir) and parent_dir != temp_dir and ("gradio" in parent_parts or ".gradio" in parent_parts):
+                    try:
+                        if os.path.exists(parent_dir) and not os.listdir(parent_dir):
+                            os.rmdir(parent_dir)
+                    except OSError:
+                        pass
+        except Exception as e:
+            print(f"⚠️ Failed to clean up temp file {path}: {e}")
+
+
 def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
     """
     Extracts text from PDF source, chunks with text splitter, and indexes into Qdrant via Zero-VRAM FastEmbed.
@@ -151,46 +185,39 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
     import tempfile
     temp_dir = os.path.abspath(tempfile.gettempdir())
 
-    if isinstance(pdf_source, list):
-        for item in pdf_source:
-            file_path = item.name if hasattr(item, 'name') else str(item)
-            if os.path.exists(file_path):
-                if PyPDFLoader is not None:
-                    loader = PyPDFLoader(file_path=file_path)
-                    data.extend(loader.load())
-                try:
-                    norm_path = os.path.abspath(file_path)
-                    if norm_path.startswith(temp_dir) or "gradio" in norm_path.lower():
-                        temp_files_to_clean.append(norm_path)
-                except Exception:
-                    pass
-    elif isinstance(pdf_source, str):
-        if os.path.isdir(pdf_source):
-            if PyPDFDirectoryLoader is not None:
-                loader = PyPDFDirectoryLoader(path=pdf_source)
-                data.extend(loader.load())
-        elif os.path.isfile(pdf_source):
-            if PyPDFLoader is not None:
-                loader = PyPDFLoader(file_path=pdf_source)
-                data.extend(loader.load())
-            try:
-                norm_path = os.path.abspath(pdf_source)
-                if norm_path.startswith(temp_dir) and "gradio" in norm_path.lower():
-                    temp_files_to_clean.append(norm_path)
-            except Exception:
-                pass
-        else:
-            raise FileNotFoundError(f"Path not found: {pdf_source}")
-    else:
-        raise TypeError(f"Unsupported pdf_source type: {type(pdf_source)}")
+    def _is_gradio_artifact(path_str: str) -> bool:
+        norm = os.path.abspath(path_str)
+        parts = [p.lower() for p in Path(norm).parts]
+        return ("gradio" in parts or ".gradio" in parts) and (norm.startswith(temp_dir) or ".gradio" in parts)
 
-    # Chaos/SRE Guard: Unlink temporary upload files to prevent disk starvation
-    for temp_file in temp_files_to_clean:
-        try:
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
-        except Exception as e:
-            print(f"⚠️ Failed to clean up temp file {temp_file}: {e}")
+    try:
+        if isinstance(pdf_source, list):
+            for item in pdf_source:
+                file_path = item.name if hasattr(item, 'name') else str(item)
+                if os.path.exists(file_path):
+                    if _is_gradio_artifact(file_path):
+                        temp_files_to_clean.append(os.path.abspath(file_path))
+                    if PyPDFLoader is not None:
+                        loader = PyPDFLoader(file_path=file_path)
+                        data.extend(loader.load())
+        elif isinstance(pdf_source, str):
+            if os.path.isdir(pdf_source):
+                if PyPDFDirectoryLoader is not None:
+                    loader = PyPDFDirectoryLoader(path=pdf_source)
+                    data.extend(loader.load())
+            elif os.path.isfile(pdf_source):
+                if _is_gradio_artifact(pdf_source):
+                    temp_files_to_clean.append(os.path.abspath(pdf_source))
+                if PyPDFLoader is not None:
+                    loader = PyPDFLoader(file_path=pdf_source)
+                    data.extend(loader.load())
+            else:
+                raise FileNotFoundError(f"Path not found: {pdf_source}")
+        else:
+            raise TypeError(f"Unsupported pdf_source type: {type(pdf_source)}")
+    finally:
+        # Chaos/SRE Guard: Unconditionally garbage-collect uploaded temp files even on load failure
+        cleanup_temporary_files(temp_files_to_clean)
 
     if not data:
         return None, None, None
