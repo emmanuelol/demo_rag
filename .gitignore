@@ -13,3 +13,4 @@ __pycache__/
 local_codegraph*
 target_context*
 targeted_context*
+.cache/

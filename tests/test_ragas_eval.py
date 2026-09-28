@@ -2,9 +2,18 @@
 """
 Deterministic Lexical Evaluation Matrix (Offline Proxy) & CRAG Verification.
 
-NOTE: This suite intentionally avoids live LLM-as-a-judge dependencies (e.g., official Ragas API) 
-to ensure zero-cost, air-gapped, and 100% deterministic CI/CD execution. 
-It evaluates:
+NOTE (Offline Metric Transparency - P2 Tech Debt Resolution):
+This suite intentionally executes a "Deterministic Lexical Evaluation Matrix (Offline Proxy)"
+utilizing mathematical token-overlap heuristics rather than an external LLM-as-a-judge framework
+(e.g., official Ragas or proprietary LLM APIs).
+
+Architectural Rationale:
+1. Air-Gapped CI/CD Execution: Operates with zero network calls, API keys, or cloud endpoints.
+2. Deterministic Repeatability: Eliminates non-deterministic LLM grading variance and flaky test runs.
+3. Zero Token Overhead: Eliminates API cost and rate-limiting bottlenecks during continuous test passes.
+4. Sub-Second Latency: Completes quantitative evaluations in milliseconds rather than minutes.
+
+Evaluates:
 1. Semantic Router classification accuracy.
 2. Retrieval Grader relevance filtering and query rewriter.
 3. LangGraph CRAG state machine self-correction loop and recursion ceiling.
@@ -229,8 +238,14 @@ def test_crag_state_machine_self_correction_loop(monkeypatch):
 def test_ragas_evaluation_matrix_scoring(capsys):
     """
     Test 4: Execute Deterministic Lexical Evaluation Matrix (Offline Proxy) over the Golden Dataset.
-    Prints scoring table and verifies Context Precision and Answer Relevance quality gates
-    without external LLM-as-a-judge latency or API overhead.
+    
+    Offline Metric Transparency Note:
+    This test runs a deterministic token-overlap heuristic matrix rather than an LLM-as-a-judge
+    framework (such as standard Ragas with an OpenAI/Anthropic/Ollama judge model).
+    This design choice enables:
+    - Zero external API dependencies (fully air-gapped CI/CD).
+    - Sub-second grading with zero test flakiness or rate limits.
+    - Deterministic assertion of Context Precision (>=0.70) and Answer Relevance (>=0.85).
     """
     matrix_results = []
 
