@@ -4,8 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.10](https://img.shields.io/badge/Python-3.10-green.svg)](https://www.python.org/)
 [![Docker: Compose](https://img.shields.io/badge/Docker-Compose_v2-2496ED.svg)](docker-compose.yaml)
+[![Powered by: yani-engine](https://img.shields.io/badge/Powered%20by-yani--engine-orange.svg)](#)
 
-An industrial-grade, self-correcting **Corrective RAG (CRAG)** microservice graph engineered for deterministic reliability in constrained bare-metal environments (local **RTX 4060 8GB VRAM** and **Ryzen 7 32GB RAM**) with seamless cloud bursting to **Google Cloud Platform (Vertex AI)**.
+An industrial-grade, self-correcting **Corrective RAG (CRAG)** microservice graph powered by **yani-engine**, engineered for deterministic reliability in constrained bare-metal environments (local **RTX 4060 8GB VRAM** and **Ryzen 7 32GB RAM**) with seamless cloud bursting to **Google Cloud Platform (Vertex AI)**.
 
 ---
 
@@ -51,10 +52,12 @@ flowchart TD
 
 ## ⚡ Core Technical Innovations
 
-### 1. Asymmetric Hardware Fencing (Zero-VRAM Bleed)
+### 1. Asymmetric Hardware Fencing & Resource Isolation (Zero-VRAM Bleed)
 * **Generative Model Fencing**: [scripts/Modelfile.template](scripts/Modelfile.template) and runtime injection cap Ollama KV cache to `PARAMETER num_ctx 4096` and `temperature 0.2`, keeping maximum VRAM utilization below 5.5GB on 8GB GPUs.
 * **Vector Engine Isolation**: Qdrant is deployed with `resources.limits.memory: 4G` and `DeviceRequests: []`. It is hard-isolated from the NVIDIA runtime and operates with zero GPU allocation.
 * **CPU Starvation Prevention**: FastEmbed dense embeddings (`BAAI/bge-small-en-v1.5`) and FlashRank cross-encoder reranking explicitly fence CPU threads to `threads=4` (`OMP_NUM_THREADS=4`, `MKL_NUM_THREADS=4`), preventing host freezes during heavy indexing.
+* **Host-to-Container Cache Alignment**: Configurable `${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed` allows bare-metal ingestion pipelines ([scripts/ingest_pipeline.py](scripts/ingest_pipeline.py)) and Docker containers to share downloaded model weights seamlessly without duplicate downloads.
+* **Active Upload Garbage Collection ([run_rag.py](run_rag.py))**: Temporary PDF upload artifacts and empty session subdirectories generated during Gradio sessions are automatically garbage-collected in guarded `try...finally` blocks, preventing disk and inode exhaustion.
 
 ### 2. Cognitive Architecture & Self-Correction (CRAG)
 * **Semantic Router ([scripts/router.py](scripts/router.py))**: Classifies incoming inputs into `general_chat`, `codebase_ast`, and `vector_search`. Heuristic regex filters conversational small talk in 0ms without consuming LLM inference tokens.
@@ -76,9 +79,9 @@ flowchart TD
 
 ---
 
-## 📊 Ragas Continuous Evaluation Matrix
+## 📊 Deterministic Lexical Evaluation Matrix (Offline Proxy)
 
-The pipeline is audited against a Golden Dataset verifying precision, relevance, and routing fidelity:
+The pipeline is audited via a **Deterministic Lexical Evaluation Matrix (Offline Proxy)** powered by **yani-engine** against a Golden Dataset. This suite intentionally uses mathematical token-overlap heuristics rather than a live LLM-as-a-judge API to provide 100% deterministic, zero-cost, and air-gapped CI/CD verification:
 
 ```text
 ==============================================================================
