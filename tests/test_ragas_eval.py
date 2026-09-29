@@ -310,6 +310,12 @@ def test_factory_local_and_gcp_fallback(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
 
+    # SRE Chaos Time-Warp: Mock ADC discovery to fail immediately in 0.001s
+    # rather than polling unreachable GCE metadata server (169.254.169.254) for 12+ seconds
+    import google.auth
+    from google.auth.exceptions import DefaultCredentialsError
+    monkeypatch.setattr(google.auth, "default", MagicMock(side_effect=DefaultCredentialsError("Mock ADC credentials unavailable")))
+
     gcp_llm = get_llm_provider("gcp")
     assert isinstance(gcp_llm, LocalLLMWrapper), "GCP auth failure must safely degrade to LocalLLMWrapper"
 
