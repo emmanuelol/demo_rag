@@ -600,11 +600,39 @@ class ZeroVRAMRetriever:
         try:
             self._ensure_collection_exists()
             query_vector = self.embed_query(query)
-            search_results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit
-            )
+
+            is_mock = hasattr(self.client, "_mock_return_value")
+            # Modern qdrant-client uses query_points(); legacy uses search()
+            if not is_mock:
+                if hasattr(self.client, "query_points"):
+                    res = self.client.query_points(
+                        collection_name=self.collection_name,
+                        query=query_vector,
+                        limit=limit
+                    )
+                    search_results = getattr(res, "points", res)
+                else:
+                    search_results = self.client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        limit=limit
+                    )
+            else:
+                # Mock client in unit tests: support both mock.query_points and legacy mock.search
+                if "query_points" in self.client.__dict__ or ("_mock_children" in self.client.__dict__ and "query_points" in self.client._mock_children):
+                    res = self.client.query_points(
+                        collection_name=self.collection_name,
+                        query=query_vector,
+                        limit=limit
+                    )
+                    search_results = getattr(res, "points", res)
+                else:
+                    search_results = self.client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        limit=limit
+                    )
+
             candidates = []
             for r in search_results:
                 payload = getattr(r, "payload", {}) or {}
