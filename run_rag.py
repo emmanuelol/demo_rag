@@ -853,6 +853,27 @@ def clear_db() -> str:
         return f"🔴 Clear failed: {type(e).__name__}: {e}"
 
 
+def get_infra_banner() -> str:
+    """
+    Returns a high-visibility HTML error banner if Qdrant is unreachable.
+    Returns empty string when healthy (renders nothing).
+    Called via demo.load() — never blocks UI render at startup.
+    """
+    status = get_db_status()
+    if "🔴" in status:
+        return (
+            '<div style="background:#ffebee;color:#c62828;padding:15px;margin-bottom:12px;'
+            'border-radius:6px;border:2px solid #ef5350;">'
+            '<h3 style="margin:0 0 8px 0;">⚠️ CRITICAL: Vector Database Offline</h3>'
+            f'<p style="margin:0 0 6px 0;"><strong>{status}</strong></p>'
+            "<p style=\"margin:0;\">Document uploads will fail. "
+            "Ensure the <code>qdrant</code> container is running: "
+            "<code>docker compose ps</code></p>"
+            "</div>"
+        )
+    return ""
+
+
 def create_ui():
     """
     Constructs decoupled industrial-grade Gradio Blocks interface.
@@ -865,6 +886,11 @@ def create_ui():
     with gr.Blocks(title="Industrial-Grade Zero-VRAM RAG System") as demo:
         gr.Markdown("# 🛡️ Industrial-Grade Zero-VRAM RAG System")
         gr.Markdown("Enterprise Self-Correcting CRAG engine powered by Qwen-2.5, Qdrant & Zero-VRAM FastEmbed.")
+
+        # ── Pre-flight Infrastructure Banner ──────────────────────────────────
+        # Initialized empty; populated reactively by demo.load → get_infra_banner().
+        # Renders a red block if Qdrant is unreachable, invisible otherwise.
+        infra_banner = gr.HTML(value="")
 
         # ── DB Status Bar ──────────────────────────────────────────────────────
         with gr.Row():
@@ -928,8 +954,9 @@ def create_ui():
                 )
 
         # ── Event Handlers: Segregated Pipelines ───────────────────────────────
-        # Populate DB status on page load without blocking UI render
+        # Both loads fire async on page load — no blocking at startup
         demo.load(fn=get_db_status, inputs=[], outputs=db_status)
+        demo.load(fn=get_infra_banner, inputs=[], outputs=infra_banner)
 
         clear_db_btn.click(fn=clear_db, inputs=[], outputs=db_status)
 
