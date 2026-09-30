@@ -26,5 +26,10 @@ scikit-learn>=1.3.0
 tqdm>=4.65.0
 pyyaml>=6.0.0
 pytest-xdist>=3.5.0
+# Optional: GPU-accelerated ONNX runtime for FastEmbed CUDAExecutionProvider.
+# Only effective when USE_GPU_EMBEDDINGS=true and nvidia drivers are present.
+# fastembed auto-selects CUDA when this package is installed and CUDA is available.
+onnxruntime-gpu~=1.19.0
+
 
 

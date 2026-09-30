@@ -204,15 +204,47 @@ class QdrantIndexer:
 
     @property
     def embedding_model(self):
-        """Lazy-loaded FastEmbed model with strict thread limits and aligned cache directory."""
+        """
+        Lazy-loaded FastEmbed model with dynamic GPU→CPU execution provider fallback.
+        - Reads USE_GPU_EMBEDDINGS env var (set true in docker-compose for RTX 4060 passthrough).
+        - Attempts CUDAExecutionProvider (fastembed cuda=True) when env is set.
+        - On any VRAM lock / OOM / driver error, degrades gracefully to CPUExecutionProvider.
+        - Strict thread limits and aligned cache directory are always enforced.
+        """
         if self._embedding_model is None:
             try:
                 from fastembed import TextEmbedding
-                self._embedding_model = TextEmbedding(
-                    model_name=self.embedding_model_name,
-                    cache_dir=self.cache_dir,
-                    threads=self.threads
-                )
+                use_gpu = os.getenv("USE_GPU_EMBEDDINGS", "false").lower() in ("true", "1", "yes")
+
+                if use_gpu:
+                    try:
+                        self._embedding_model = TextEmbedding(
+                            model_name=self.embedding_model_name,
+                            cache_dir=self.cache_dir,
+                            threads=self.threads,
+                            cuda=True
+                        )
+                        logger.info(f"FastEmbed({self.embedding_model_name}): CUDAExecutionProvider active.")
+                    except Exception as gpu_err:
+                        # Chaos guard: VRAM locked by Ollama, OOM, or driver unavailable
+                        logger.warning(
+                            f"FastEmbed GPU init failed ({type(gpu_err).__name__}: {gpu_err}). "
+                            "Falling back to CPUExecutionProvider."
+                        )
+                        self._embedding_model = TextEmbedding(
+                            model_name=self.embedding_model_name,
+                            cache_dir=self.cache_dir,
+                            threads=self.threads
+                        )
+                        logger.info(f"FastEmbed({self.embedding_model_name}): CPUExecutionProvider (fallback).")
+                else:
+                    self._embedding_model = TextEmbedding(
+                        model_name=self.embedding_model_name,
+                        cache_dir=self.cache_dir,
+                        threads=self.threads
+                    )
+                    logger.info(f"FastEmbed({self.embedding_model_name}): CPUExecutionProvider (USE_GPU_EMBEDDINGS=false).")
+
             except Exception as e:
                 logger.error(f"Failed to initialize FastEmbed({self.embedding_model_name}): {e}")
                 raise
