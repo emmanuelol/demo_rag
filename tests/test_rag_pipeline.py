@@ -353,8 +353,9 @@ def test_gradio_temporary_file_active_cleanup(tmp_path, monkeypatch):
 
 def test_process_pdf_cleanup_on_loader_exception(monkeypatch):
     """
-    Chaos Test: Verify that if PyPDFLoader raises an unhandled exception on a malformed PDF,
-    the try...finally guard in process_pdf guarantees temporary files are still garbage-collected.
+    Chaos Test: Verify that if PyPDFLoader raises an exception on a malformed PDF,
+    the fault-tolerant loop catches the error, logs it, and the try...finally guard
+    guarantees temporary files are still garbage-collected without crashing the thread.
     """
     import tempfile
     from run_rag import process_pdf
@@ -373,16 +374,17 @@ def test_process_pdf_cleanup_on_loader_exception(monkeypatch):
 
     monkeypatch.setattr("run_rag.PyPDFLoader", MockFailingLoader)
 
-    with pytest.raises(RuntimeError, match="PDFSyntaxError"):
-        process_pdf(
-            pdf_source=[str(corrupted_pdf)],
-            model_embedding="qwen2.5:7b-fenced",
-            persist_directory="/tmp/test_persist",
-            chunk_size=500,
-            chunk_overlap=100
-        )
+    # Fault-tolerant execution: does not raise unhandled exception
+    splitter, vs, retriever = process_pdf(
+        pdf_source=[str(corrupted_pdf)],
+        model_embedding="qwen2.5:7b-fenced",
+        persist_directory="/tmp/test_persist",
+        chunk_size=500,
+        chunk_overlap=100
+    )
 
-    # File must be deleted despite unhandled exception
+    assert retriever is None, "Retriever must be None when no documents are successfully loaded"
+    # File must be deleted despite loader exception
     assert not corrupted_pdf.exists(), "Corrupted temporary file must be unlinked in finally block"
     assert not leak_test_dir.exists(), "Empty parent temp directory must be pruned in finally block"
 
@@ -401,6 +403,159 @@ def test_docker_compose_cache_alignment_config():
     assert compose_text.count(expected_volume) == 2, (
         f"Expected {expected_volume} to appear in both client and notebook services in docker-compose.yaml"
     )
+
+
+# ============================================================
+# PRESENTATION LAYER & UX HARDENING TESTS (DECOUPLED ARCHITECTURE)
+# ============================================================
+
+def test_create_ui_decoupled_architecture():
+    """
+    Verify decoupled Gradio UI architecture:
+    1. Built using gr.Blocks with updated branding.
+    2. Accordion is removed completely (hyperparameters visible in Ingestion Zone).
+    3. create_embeddings checkbox removed.
+    4. Segregated zones: dedicated '⚙️ Create Vectors & Ingest' button and 'Submit Query' button.
+    """
+    import gradio as gr
+    from run_rag import create_ui
+
+    demo = create_ui()
+    assert isinstance(demo, gr.Blocks), "UI must be built with gr.Blocks"
+
+    # Verify Accordion is removed
+    accordions = [c for c in demo.blocks.values() if isinstance(c, gr.Accordion)]
+    assert len(accordions) == 0, "Collapsed Accordion must be removed to avoid hidden state"
+
+    # Verify Checkboxes inside UI (only reset vector store should remain)
+    checkboxes = [c for c in demo.blocks.values() if isinstance(c, gr.Checkbox)]
+    create_chk = next((c for c in checkboxes if c.label == "create embeddings"), None)
+    assert create_chk is None, "create_embeddings checkbox must be removed"
+    reset_chk = next((c for c in checkboxes if c.label == "reset vector store"), None)
+    assert reset_chk is not None, "reset_vectorstore checkbox must be present in Ingestion Zone"
+
+    # Verify Buttons
+    buttons = [getattr(c, "value", "") for c in demo.blocks.values() if isinstance(c, gr.Button)]
+    assert any("Create Vectors & Ingest" in b for b in buttons), "Must have dedicated ingestion button"
+    assert any("Submit Query" in b for b in buttons), "Must have dedicated chat query button"
+
+
+def test_process_ingestion_zero_byte_and_fault_tolerance(tmp_path, monkeypatch):
+    """
+    Verify process_ingestion pre-flight checks and fault-tolerant batch loading:
+    1. Rejects empty payload.
+    2. Filters out 0-byte files with warning.
+    3. Ingests valid files without aborting on corrupted file.
+    """
+    from run_rag import process_ingestion
+
+    # 1. Empty payload check
+    res_none = process_ingestion(None)
+    msg_none = res_none[0] if isinstance(res_none, tuple) else res_none
+    assert "Error: No PDF files uploaded" in msg_none
+
+    res_empty_list = process_ingestion([])
+    msg_empty_list = res_empty_list[0] if isinstance(res_empty_list, tuple) else res_empty_list
+    assert "Error: No PDF files uploaded" in msg_empty_list
+
+    # 2. 0-byte file check
+    empty_file = tmp_path / "zero_byte.pdf"
+    empty_file.write_bytes(b"")
+
+    res_empty = process_ingestion([str(empty_file)])
+    msg_empty = res_empty[0] if isinstance(res_empty, tuple) else res_empty
+    assert "All uploaded files were empty" in msg_empty
+
+    # 3. Batch with 1 0-byte, 1 corrupt, and 1 valid file
+    corrupt_file = tmp_path / "corrupt.pdf"
+    corrupt_file.write_text("corrupted content", encoding="utf-8")
+
+    valid_file = tmp_path / "valid.pdf"
+    valid_file.write_text("valid content for indexing", encoding="utf-8")
+
+    class MockDoc:
+        page_content = "Extracted valid document text for testing"
+        metadata = {"source": str(valid_file)}
+
+    class MockSmartLoader:
+        def __init__(self, file_path):
+            self.file_path = file_path
+        def load(self):
+            if "corrupt" in str(self.file_path):
+                raise RuntimeError("PdfReadError: Stream corrupted")
+            return [MockDoc()]
+
+    monkeypatch.setattr("run_rag.PyPDFLoader", MockSmartLoader)
+
+    # Mock QdrantIndexer to avoid needing active Qdrant cluster
+    mock_indexer = MagicMock()
+    monkeypatch.setattr("scripts.ingestion_core.QdrantIndexer", lambda **kwargs: mock_indexer)
+
+    res_batch = process_ingestion([str(empty_file), str(corrupt_file), str(valid_file)])
+    msg_batch = res_batch[0] if isinstance(res_batch, tuple) else res_batch
+    assert "Ingestion complete: 1 file(s) indexed" in msg_batch
+    assert "zero_byte.pdf" in msg_batch
+    assert mock_indexer.index_chunks.called
+
+
+def test_process_query_decoupled_flow(monkeypatch):
+    """
+    Verify process_query operates purely as CRAG query dispatcher without ingestion.
+    """
+    from run_rag import process_query
+
+    # 1. Empty query guard
+    assert "Error: Question cannot be empty" in process_query("")
+    assert "Error: Question cannot be empty" in process_query("   ")
+
+    # 2. Mock ask_question to verify arguments
+    captured_args = {}
+    def mock_ask_question(**kwargs):
+        nonlocal captured_args
+        captured_args = kwargs
+        return "Answer to CRAG query"
+
+    monkeypatch.setattr("run_rag.ask_question", mock_ask_question)
+    monkeypatch.setenv("QDRANT_HOST", "qdrant_prod")
+    monkeypatch.setenv("QDRANT_PORT", "6333")
+
+    ans = process_query("What is Corrective RAG?")
+    assert ans == "Answer to CRAG query"
+    assert captured_args["pdf_bytes"] is None
+    assert captured_args["create_embeddings"] is False
+    assert captured_args["question"] == "What is Corrective RAG?"
+    assert captured_args["model_embedding"] == "qwen2.5:7b-fenced"
+    assert captured_args["embeddings_directory"] == "http://qdrant_prod:6333"
+
+    # Backward-compatible invocation test: process_query(pdf_files, "query text")
+    ans_legacy = process_query(["legacy.pdf"], "Legacy query text")
+    assert ans_legacy == "Answer to CRAG query"
+    assert captured_args["question"] == "Legacy query text"
+
+
+def test_ollama_entrypoint_eradicate_curl_dependency():
+    """
+    Verify entrypoint.sh and scripts/run_ollama.sh do not invoke curl,
+    which is absent from the official ollama/ollama base image, preventing
+    fatal container boot loops.
+    """
+    entrypoint_path = REPO_ROOT / "entrypoint.sh"
+    assert entrypoint_path.exists(), "entrypoint.sh must exist"
+    entrypoint_text = entrypoint_path.read_text(encoding="utf-8")
+
+    # Assert no curl calls in entrypoint.sh
+    assert "curl" not in entrypoint_text, "entrypoint.sh must not contain curl dependency"
+    assert "ollama list" in entrypoint_text, "entrypoint.sh must poll using native ollama list"
+
+    # Assert scripts/run_ollama.sh also uses native polling
+    run_ollama_path = REPO_ROOT / "scripts" / "run_ollama.sh"
+    if run_ollama_path.exists():
+        run_ollama_text = run_ollama_path.read_text(encoding="utf-8")
+        assert "curl" not in run_ollama_text, "scripts/run_ollama.sh must not call curl in container"
+        assert "ollama list" in run_ollama_text
+
+
+
 
 
 
