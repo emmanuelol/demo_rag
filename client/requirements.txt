@@ -1,4 +1,4 @@
-qdrant-client>=1.9.1
+qdrant-client>=1.11.0
 # fastembed-gpu replaces fastembed (CPU). Both share the same namespace — cannot coexist.
 # fastembed-gpu 0.8.x requires onnxruntime-gpu; pip will install it as a transitive dep,
 # but we pin explicitly to avoid ABI mismatches. ~=1.20.0 is the min ABI for 0.8.x.

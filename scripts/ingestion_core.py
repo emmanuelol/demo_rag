@@ -194,8 +194,7 @@ class QdrantIndexer:
                 self._client = QdrantClient(
                     host=self.qdrant_host,
                     port=self.qdrant_port,
-                    timeout=10.0,
-                    check_compatibility=False
+                    timeout=10.0
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize QdrantClient({self.qdrant_host}:{self.qdrant_port}): {e}")

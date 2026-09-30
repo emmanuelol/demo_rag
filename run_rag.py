@@ -819,45 +819,48 @@ def process_query(question: Any = "", *args, **kwargs) -> str:
 
 
 def get_db_status() -> str:
-    """
-    Queries Qdrant for live collection vector count.
-    Returns a human-readable status string safe for display in gr.Textbox.
-    Fault-tolerant: never raises — returns degraded status on any connection error.
-    """
+    """Queries Qdrant to provide a live status of the vector database (Version-Agnostic)."""
     q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
     q_port = int(os.getenv("QDRANT_PORT", "6333"))
     collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
     try:
         from qdrant_client import QdrantClient
         client = QdrantClient(host=q_host, port=q_port, timeout=3.0)
-        info = client.get_collection(collection_name)
-        count = info.vectors_count if info.vectors_count is not None else 0
-        return f"🟢 Ready: {count:,} vector(s) in '{collection_name}'"
+
+        collections_response = client.get_collections()
+        collection_exists = any(c.name == collection_name for c in collections_response.collections)
+
+        if collection_exists:
+            info = client.get_collection(collection_name)
+            count = getattr(info, "points_count", getattr(info, "vectors_count", 0)) or 0
+            return f"🟢 Ready: Collection '{collection_name}' has {count:,} vectors loaded."
+        return "🟡 Empty: No collection found. Ready for first ingestion."
     except Exception as e:
-        err = str(e)
-        if "not found" in err.lower() or "doesn't exist" in err.lower() or "404" in err:
-            return f"🟡 Empty: Collection '{collection_name}' does not exist yet."
-        return f"🔴 Unreachable: Qdrant at {q_host}:{q_port} ({type(e).__name__})"
+        return f"🔴 Unreachable: Qdrant at {q_host}:{q_port} ({type(e).__name__}: {str(e)})"
 
 
-def clear_db() -> str:
-    """
-    Atomically wipes the Qdrant collection for a clean slate.
-    Uses delete_collection (not filesystem rmtree) because this repo targets
-    a networked Qdrant service — there is no local vector folder to wipe.
-    """
+def reset_database() -> str:
+    """Wipes the Qdrant collection for a clean slate (Version-Agnostic)."""
     q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
     q_port = int(os.getenv("QDRANT_PORT", "6333"))
     collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
     try:
         from qdrant_client import QdrantClient
         client = QdrantClient(host=q_host, port=q_port, timeout=5.0)
-        collections = [c.name for c in client.get_collections().collections]
-        if collection_name in collections:
+
+        collections_response = client.get_collections()
+        collection_exists = any(c.name == collection_name for c in collections_response.collections)
+
+        if collection_exists:
             client.delete_collection(collection_name)
-        return get_db_status()
+            return f"🟡 Clean Slate: Collection '{collection_name}' wiped successfully."
+        return "ℹ️ Info: Collection was already empty."
     except Exception as e:
-        return f"🔴 Clear failed: {type(e).__name__}: {e}"
+        return f"🔴 Error resetting database: {type(e).__name__}: {str(e)}"
+
+
+# Backwards compatibility alias for UI and ingestion callers
+clear_db = reset_database
 
 
 def get_infra_banner() -> str:
