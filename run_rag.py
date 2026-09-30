@@ -611,9 +611,10 @@ def process_ingestion(
     progress: gr.Progress = gr.Progress()
 ) -> Tuple[str, str]:
     """
-    Decoupled ingestion handler with real-time progress tracking.
-    Performs pre-flight zero-byte file filtering, fault-tolerant batch parsing,
-    chunking, and Qdrant index upserting without touching the LLM or chat state machine.
+    Decoupled ingestion handler with real-time micro-batch progress tracking.
+    Processes each file independently: load → chunk → micro-batch index.
+    Each 32-chunk batch yields to Gradio's FastAPI event loop via progress.tqdm,
+    pushing granular WebSocket updates instead of freezing at 0% until completion.
     Returns (status_message, db_status) tuple for dual UI output binding.
     """
     if not pdf_files:
@@ -646,44 +647,137 @@ def process_ingestion(
             msg += f" Skipped: {', '.join(f'{f} ({r})' for f, r in skipped_files)}"
         return msg, get_db_status()
 
+    # 2. Reset collection if requested (before indexer init)
+    if reset_vectorstore:
+        progress(0.01, desc="🧹 Wiping existing vector store...")
+        clear_db()
+
     q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
-    q_port = os.getenv("QDRANT_PORT", "6333")
-    embeddings_endpoint = os.getenv("QDRANT_URL", f"http://{q_host}:{q_port}")
-    model_name = "qwen2.5:7b-fenced"
+    q_port = int(os.getenv("QDRANT_PORT", "6333"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
     total = len(valid_files)
+    processed_count = 0
+    successful_sources: set = set()
+    temp_files_to_clean = []
+    import tempfile as _tempfile
+    temp_dir = os.path.abspath(_tempfile.gettempdir())
+
+    def _is_gradio_artifact(path_str: str) -> bool:
+        norm = os.path.abspath(path_str)
+        parts = [p.lower() for p in Path(norm).parts]
+        return ("gradio" in parts or ".gradio" in parts) and (norm.startswith(temp_dir) or ".gradio" in parts)
 
     try:
-        # Emit per-file progress ticks before batch hand-off to process_pdf
-        for i, item in enumerate(valid_files):
-            fname = os.path.basename(item.name if hasattr(item, 'name') else str(item))
-            progress((i + 1) / (total + 1), desc=f"Indexing {fname} ({i + 1}/{total})")
+        from scripts.ingestion_core import QdrantIndexer, generate_deterministic_chunk_id
 
-        progress(total / (total + 1), desc="Finalizing index...")
-        text_splitter, vectorstore, retriever = process_pdf(
-            pdf_source=valid_files,
-            model_embedding=model_name,
-            persist_directory=embeddings_endpoint,
-            chunk_size=int(chunk_size),
-            chunk_overlap=int(chunk_overlap),
-            reset_existing=reset_vectorstore
+        # Single shared indexer for the whole session (connection reuse)
+        indexer = QdrantIndexer(
+            collection_name=collection_name,
+            qdrant_host=q_host,
+            qdrant_port=q_port,
+            threads=4
         )
-    except Exception as e:
-        return f"Error during document ingestion: {type(e).__name__}: {str(e)}", get_db_status()
 
-    if retriever is None:
-        return "Error: Document parsing yielded no valid text chunks to index.", get_db_status()
+        # 3. Per-file load → chunk → micro-batch index
+        for i, item in enumerate(valid_files):
+            file_path = item.name if hasattr(item, 'name') else str(item)
+            fname = Path(file_path).name
+            file_fraction_start = i / total
+            file_fraction_end = (i + 1) / total
+
+            progress(file_fraction_start, desc=f"📖 Parsing {fname} ({i + 1}/{total})")
+
+            if _is_gradio_artifact(file_path):
+                temp_files_to_clean.append(os.path.abspath(file_path))
+
+            try:
+                # Load
+                if PyPDFLoader is None:
+                    print(f"⚠️ PyPDFLoader unavailable, skipping {fname}")
+                    skipped_files.append((fname, "PyPDFLoader not installed"))
+                    continue
+
+                try:
+                    loader = PyPDFLoader(file_path=file_path)
+                    data = loader.load()
+                except Exception as load_err:
+                    print(f"⚠️ Load error on {fname}: {load_err}")
+                    skipped_files.append((fname, str(load_err)))
+                    continue
+
+                if not data:
+                    print(f"⚠️ No pages extracted from {fname}")
+                    skipped_files.append((fname, "No pages extracted"))
+                    continue
+
+                # Chunk
+                if RecursiveCharacterTextSplitter is not None:
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=int(chunk_size),
+                        chunk_overlap=int(chunk_overlap)
+                    )
+                    chunks = splitter.split_documents(data)
+                else:
+                    chunks = data
+
+                # SRE guard: image-only / scanned PDFs yield zero text chunks
+                if not chunks:
+                    print(f"⚠️ No text chunks from {fname} (image-only PDF?)")
+                    skipped_files.append((fname, "No extractable text"))
+                    continue
+
+                # Prepare chunk dicts
+                prepared_chunks = []
+                for idx, doc in enumerate(chunks):
+                    text = getattr(doc, "page_content", str(doc))
+                    meta = dict(getattr(doc, "metadata", {}))
+                    meta["chunk_index"] = idx
+                    meta["source_file"] = fname
+                    c_id = generate_deterministic_chunk_id(text, meta)
+                    prepared_chunks.append({"id": c_id, "text": text, "metadata": meta})
+
+                # 🚀 Micro-batch index: yields to Gradio WebSocket every 32 chunks
+                batch_size = 32
+                total_batches = max(1, (len(prepared_chunks) + batch_size - 1) // batch_size)
+
+                for b_idx in progress.tqdm(
+                    range(total_batches),
+                    desc=f"⚡ Embedding {fname}"
+                ):
+                    start_idx = b_idx * batch_size
+                    batch = prepared_chunks[start_idx: start_idx + batch_size]
+                    indexer.index_chunks(batch, batch_size=len(batch), show_progress=False)
+
+                # Track successfully indexed sources
+                for doc in data:
+                    src = getattr(doc, "metadata", {}).get("source")
+                    if src:
+                        successful_sources.add(str(src))
+
+                processed_count += 1
+                progress(file_fraction_end, desc=f"✅ Done: {fname}")
+
+            except Exception as e:
+                print(f"⚠️ Failed to process {fname}: {type(e).__name__}: {e}")
+                skipped_files.append((fname, str(e)))
+
+    finally:
+        # SRE Guard: unconditional temp artifact cleanup regardless of errors
+        cleanup_temporary_files(temp_files_to_clean)
 
     progress(1.0, desc="Complete!")
 
-    successful_count = (
-        len(retriever.successful_files)
-        if hasattr(retriever, "successful_files") and retriever.successful_files
-        else len(valid_files)
-    )
-    status_msg = f"✅ Ingestion complete: {successful_count} file(s) indexed into Qdrant."
+    if processed_count == 0:
+        err = "Error: Document parsing yielded no valid text chunks to index."
+        if skipped_files:
+            err += f" Skipped: {', '.join(f[0] for f in skipped_files)}"
+        return err, get_db_status()
+
+    status_msg = f"✅ Ingestion complete: {processed_count}/{total} file(s) indexed into Qdrant."
     if skipped_files:
-        status_msg += f" (Skipped {len(skipped_files)} corrupted/0-byte files: {', '.join(f[0] for f in skipped_files)})"
+        status_msg += f" (Skipped {len(skipped_files)}: {', '.join(f[0] for f in skipped_files)})"
     return status_msg, get_db_status()
+
 
 
 def process_query(question: Any = "", *args, **kwargs) -> str:

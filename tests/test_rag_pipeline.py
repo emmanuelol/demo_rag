@@ -493,7 +493,9 @@ def test_process_ingestion_zero_byte_and_fault_tolerance(tmp_path, monkeypatch):
 
     res_batch = process_ingestion([str(empty_file), str(corrupt_file), str(valid_file)])
     msg_batch = res_batch[0] if isinstance(res_batch, tuple) else res_batch
-    assert "Ingestion complete: 1 file(s) indexed" in msg_batch
+    # Format is now "processed/total file(s) indexed"
+    assert "Ingestion complete:" in msg_batch
+    assert "1/" in msg_batch
     assert "zero_byte.pdf" in msg_batch
     assert mock_indexer.index_chunks.called
 
