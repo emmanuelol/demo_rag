@@ -384,7 +384,11 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
         if retriever is not None:
             try:
                 if hasattr(retriever, "retrieve_and_rerank"):
-                    docs = retriever.retrieve_and_rerank(q, retrieve_limit=20, rerank_top_k=5)
+                    docs = retriever.retrieve_and_rerank(q, retrieve_limit=50, rerank_top_k=10)
+                    print(f"🔍 [CRAG Retrieval] Query='{q}' | Candidates retrieved & reranked: {len(docs)}")
+                    for idx, doc in enumerate(docs[:3]):
+                        snippet = doc.get("text", "").replace("\n", " ")[:150]
+                        print(f"   ├─ Doc {idx+1} [score={doc.get('score', 0):.4f}]: {snippet}...")
                 elif hasattr(retriever, "invoke"):
                     raw = retriever.invoke(q)
                     docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(raw)]
@@ -514,7 +518,7 @@ def run_crag_agent(
 
     while retries <= max_retries:
         if hasattr(retriever, "retrieve_and_rerank"):
-            docs = retriever.retrieve_and_rerank(search_q, retrieve_limit=20, rerank_top_k=5)
+            docs = retriever.retrieve_and_rerank(search_q, retrieve_limit=50, rerank_top_k=10)
         elif hasattr(retriever, "invoke"):
             docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(retriever.invoke(search_q))]
         else:

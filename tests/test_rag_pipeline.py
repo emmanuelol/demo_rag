@@ -230,7 +230,7 @@ def test_rag_chain_with_zero_vram_retriever(monkeypatch):
     response = rag_chain("What is MLOps?", None, mock_retriever, "qwen2.5:7b-fenced")
 
     assert response == "Generated response from fenced model"
-    mock_retriever.retrieve_and_rerank.assert_called_once_with("What is MLOps?", retrieve_limit=20, rerank_top_k=5)
+    mock_retriever.retrieve_and_rerank.assert_called_once_with("What is MLOps?", retrieve_limit=50, rerank_top_k=10)
     mock_ollama_llm.assert_called_once_with("What is MLOps?", "Passage 1 content\n\nPassage 2 content", "qwen2.5:7b-fenced")
 
 
