@@ -384,7 +384,11 @@ def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2)
         if retriever is not None:
             try:
                 if hasattr(retriever, "retrieve_and_rerank"):
-                    docs = retriever.retrieve_and_rerank(q, retrieve_limit=20, rerank_top_k=5)
+                    docs = retriever.retrieve_and_rerank(q, retrieve_limit=50, rerank_top_k=10)
+                    print(f"🔍 [CRAG Retrieval] Query='{q}' | Candidates retrieved & reranked: {len(docs)}")
+                    for idx, doc in enumerate(docs[:3]):
+                        snippet = doc.get("text", "").replace("\n", " ")[:150]
+                        print(f"   ├─ Doc {idx+1} [score={doc.get('score', 0):.4f}]: {snippet}...")
                 elif hasattr(retriever, "invoke"):
                     raw = retriever.invoke(q)
                     docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(raw)]
@@ -514,7 +518,7 @@ def run_crag_agent(
 
     while retries <= max_retries:
         if hasattr(retriever, "retrieve_and_rerank"):
-            docs = retriever.retrieve_and_rerank(search_q, retrieve_limit=20, rerank_top_k=5)
+            docs = retriever.retrieve_and_rerank(search_q, retrieve_limit=50, rerank_top_k=10)
         elif hasattr(retriever, "invoke"):
             docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(retriever.invoke(search_q))]
         else:
@@ -611,9 +615,10 @@ def process_ingestion(
     progress: gr.Progress = gr.Progress()
 ) -> Tuple[str, str]:
     """
-    Decoupled ingestion handler with real-time progress tracking.
-    Performs pre-flight zero-byte file filtering, fault-tolerant batch parsing,
-    chunking, and Qdrant index upserting without touching the LLM or chat state machine.
+    Decoupled ingestion handler with real-time micro-batch progress tracking.
+    Processes each file independently: load → chunk → micro-batch index.
+    Each 32-chunk batch yields to Gradio's FastAPI event loop via progress.tqdm,
+    pushing granular WebSocket updates instead of freezing at 0% until completion.
     Returns (status_message, db_status) tuple for dual UI output binding.
     """
     if not pdf_files:
@@ -646,44 +651,144 @@ def process_ingestion(
             msg += f" Skipped: {', '.join(f'{f} ({r})' for f, r in skipped_files)}"
         return msg, get_db_status()
 
+    # 2. Reset collection if requested (before indexer init)
+    if reset_vectorstore:
+        progress(0.01, desc="🧹 Wiping existing vector store...")
+        clear_db()
+
     q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
-    q_port = os.getenv("QDRANT_PORT", "6333")
-    embeddings_endpoint = os.getenv("QDRANT_URL", f"http://{q_host}:{q_port}")
-    model_name = "qwen2.5:7b-fenced"
+    q_port = int(os.getenv("QDRANT_PORT", "6333"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
     total = len(valid_files)
+    processed_count = 0
+    successful_sources: set = set()
+    temp_files_to_clean = []
+    import tempfile as _tempfile
+    temp_dir = os.path.abspath(_tempfile.gettempdir())
+
+    def _is_gradio_artifact(path_str: str) -> bool:
+        norm = os.path.abspath(path_str)
+        parts = [p.lower() for p in Path(norm).parts]
+        return ("gradio" in parts or ".gradio" in parts) and (norm.startswith(temp_dir) or ".gradio" in parts)
 
     try:
-        # Emit per-file progress ticks before batch hand-off to process_pdf
-        for i, item in enumerate(valid_files):
-            fname = os.path.basename(item.name if hasattr(item, 'name') else str(item))
-            progress((i + 1) / (total + 1), desc=f"Indexing {fname} ({i + 1}/{total})")
+        from scripts.ingestion_core import QdrantIndexer, generate_deterministic_chunk_id
 
-        progress(total / (total + 1), desc="Finalizing index...")
-        text_splitter, vectorstore, retriever = process_pdf(
-            pdf_source=valid_files,
-            model_embedding=model_name,
-            persist_directory=embeddings_endpoint,
-            chunk_size=int(chunk_size),
-            chunk_overlap=int(chunk_overlap),
-            reset_existing=reset_vectorstore
+        # Single shared indexer for the whole session (connection reuse)
+        indexer = QdrantIndexer(
+            collection_name=collection_name,
+            qdrant_host=q_host,
+            qdrant_port=q_port,
+            threads=4
         )
-    except Exception as e:
-        return f"Error during document ingestion: {type(e).__name__}: {str(e)}", get_db_status()
 
-    if retriever is None:
-        return "Error: Document parsing yielded no valid text chunks to index.", get_db_status()
+        # 3. Per-file load → chunk → micro-batch index with fractional multi-stage progress
+        for i, item in enumerate(valid_files):
+            file_path = item.name if hasattr(item, 'name') else str(item)
+            fname = Path(file_path).name
+            file_weight = 1.0 / total
+            base_prog = i * file_weight
+            file_fraction_end = (i + 1) * file_weight
+
+            if _is_gradio_artifact(file_path):
+                temp_files_to_clean.append(os.path.abspath(file_path))
+
+            try:
+                # --- STAGE 1: I/O Loading (10% of file slice) ---
+                progress(base_prog + (0.05 * file_weight), desc=f"📄 Stage 1/3: Reading {fname} ({i + 1}/{total})...")
+
+                if PyPDFLoader is None:
+                    print(f"⚠️ PyPDFLoader unavailable, skipping {fname}")
+                    skipped_files.append((fname, "PyPDFLoader not installed"))
+                    continue
+
+                try:
+                    loader = PyPDFLoader(file_path=file_path)
+                    data = loader.load()
+                except Exception as load_err:
+                    print(f"⚠️ Load error on {fname}: {load_err}")
+                    skipped_files.append((fname, str(load_err)))
+                    continue
+
+                if not data:
+                    print(f"⚠️ No pages extracted from {fname}")
+                    skipped_files.append((fname, "No pages extracted"))
+                    continue
+
+                # --- STAGE 2: Splitting & Preparation (20% of file slice) ---
+                progress(base_prog + (0.15 * file_weight), desc=f"✂️ Stage 2/3: Chunking {fname} ({i + 1}/{total})...")
+
+                if RecursiveCharacterTextSplitter is not None:
+                    splitter = RecursiveCharacterTextSplitter(
+                        chunk_size=int(chunk_size),
+                        chunk_overlap=int(chunk_overlap)
+                    )
+                    chunks = splitter.split_documents(data)
+                else:
+                    chunks = data
+
+                # SRE guard: image-only / scanned PDFs yield zero text chunks
+                if not chunks:
+                    print(f"⚠️ No text chunks from {fname} (image-only PDF?)")
+                    skipped_files.append((fname, "No extractable text"))
+                    continue
+
+                # Prepare chunk dicts
+                prepared_chunks = []
+                for idx, doc in enumerate(chunks):
+                    text = getattr(doc, "page_content", str(doc))
+                    meta = dict(getattr(doc, "metadata", {}))
+                    meta["chunk_index"] = idx
+                    meta["source_file"] = fname
+                    c_id = generate_deterministic_chunk_id(text, meta)
+                    prepared_chunks.append({"id": c_id, "text": text, "metadata": meta})
+
+                # --- STAGE 3: Embedding & Indexing (70% of file slice) ---
+                batch_size = 32
+                total_batches = max(1, (len(prepared_chunks) + batch_size - 1) // batch_size)
+
+                for b_idx in range(total_batches):
+                    batch_fraction = (b_idx / total_batches) * (0.70 * file_weight)
+                    current_prog = base_prog + (0.30 * file_weight) + batch_fraction
+                    progress(
+                        current_prog,
+                        desc=f"🧠 Stage 3/3: Embedding {fname} ({b_idx + 1}/{total_batches})"
+                    )
+
+                    start_idx = b_idx * batch_size
+                    batch = prepared_chunks[start_idx : start_idx + batch_size]
+                    indexer.index_chunks(batch, batch_size=len(batch), show_progress=False)
+
+                # Track successfully indexed sources
+                for doc in data:
+                    src = getattr(doc, "metadata", {}).get("source")
+                    if src:
+                        successful_sources.add(str(src))
+
+                processed_count += 1
+                progress(file_fraction_end, desc=f"✅ Done: {fname} ({i + 1}/{total})")
+
+            except Exception as e:
+                print(f"⚠️ Failed to process {fname}: {type(e).__name__}: {e}")
+                skipped_files.append((fname, str(e)))
+
+    finally:
+        # SRE Guard: unconditional temp artifact cleanup regardless of errors
+        cleanup_temporary_files(temp_files_to_clean)
 
     progress(1.0, desc="Complete!")
 
-    successful_count = (
-        len(retriever.successful_files)
-        if hasattr(retriever, "successful_files") and retriever.successful_files
-        else len(valid_files)
-    )
-    status_msg = f"✅ Ingestion complete: {successful_count} file(s) indexed into Qdrant."
+    if processed_count == 0:
+        err = "Error: Document parsing yielded no valid text chunks to index."
+        if skipped_files:
+            err += f" Skipped: {', '.join(f[0] for f in skipped_files)}"
+        return err, get_db_status()
+
+    status_msg = f"✅ Ingestion complete: {processed_count}/{total} file(s) indexed into Qdrant."
     if skipped_files:
-        status_msg += f" (Skipped {len(skipped_files)} corrupted/0-byte files: {', '.join(f[0] for f in skipped_files)})"
+        status_msg += f" (Skipped {len(skipped_files)}: {', '.join(f[0] for f in skipped_files)})"
     return status_msg, get_db_status()
+
 
 
 def process_query(question: Any = "", *args, **kwargs) -> str:
@@ -718,45 +823,69 @@ def process_query(question: Any = "", *args, **kwargs) -> str:
 
 
 def get_db_status() -> str:
-    """
-    Queries Qdrant for live collection vector count.
-    Returns a human-readable status string safe for display in gr.Textbox.
-    Fault-tolerant: never raises — returns degraded status on any connection error.
-    """
+    """Queries Qdrant to provide a live status of the vector database (Version-Agnostic)."""
     q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
     q_port = int(os.getenv("QDRANT_PORT", "6333"))
     collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
     try:
         from qdrant_client import QdrantClient
         client = QdrantClient(host=q_host, port=q_port, timeout=3.0)
-        info = client.get_collection(collection_name)
-        count = info.vectors_count if info.vectors_count is not None else 0
-        return f"🟢 Ready: {count:,} vector(s) in '{collection_name}'"
+
+        collections_response = client.get_collections()
+        collection_exists = any(c.name == collection_name for c in collections_response.collections)
+
+        if collection_exists:
+            info = client.get_collection(collection_name)
+            count = getattr(info, "points_count", getattr(info, "vectors_count", 0)) or 0
+            return f"🟢 Ready: Collection '{collection_name}' has {count:,} vectors loaded."
+        return "🟡 Empty: No collection found. Ready for first ingestion."
     except Exception as e:
-        err = str(e)
-        if "not found" in err.lower() or "doesn't exist" in err.lower() or "404" in err:
-            return f"🟡 Empty: Collection '{collection_name}' does not exist yet."
-        return f"🔴 Unreachable: Qdrant at {q_host}:{q_port} ({type(e).__name__})"
+        return f"🔴 Unreachable: Qdrant at {q_host}:{q_port} ({type(e).__name__}: {str(e)})"
 
 
-def clear_db() -> str:
-    """
-    Atomically wipes the Qdrant collection for a clean slate.
-    Uses delete_collection (not filesystem rmtree) because this repo targets
-    a networked Qdrant service — there is no local vector folder to wipe.
-    """
+def reset_database() -> str:
+    """Wipes the Qdrant collection for a clean slate (Version-Agnostic)."""
     q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
     q_port = int(os.getenv("QDRANT_PORT", "6333"))
     collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
     try:
         from qdrant_client import QdrantClient
         client = QdrantClient(host=q_host, port=q_port, timeout=5.0)
-        collections = [c.name for c in client.get_collections().collections]
-        if collection_name in collections:
+
+        collections_response = client.get_collections()
+        collection_exists = any(c.name == collection_name for c in collections_response.collections)
+
+        if collection_exists:
             client.delete_collection(collection_name)
-        return get_db_status()
+            return f"🟡 Clean Slate: Collection '{collection_name}' wiped successfully."
+        return "ℹ️ Info: Collection was already empty."
     except Exception as e:
-        return f"🔴 Clear failed: {type(e).__name__}: {e}"
+        return f"🔴 Error resetting database: {type(e).__name__}: {str(e)}"
+
+
+# Backwards compatibility alias for UI and ingestion callers
+clear_db = reset_database
+
+
+def get_infra_banner() -> str:
+    """
+    Returns a high-visibility HTML error banner if Qdrant is unreachable.
+    Returns empty string when healthy (renders nothing).
+    Called via demo.load() — never blocks UI render at startup.
+    """
+    status = get_db_status()
+    if "🔴" in status:
+        return (
+            '<div style="background:#ffebee;color:#c62828;padding:15px;margin-bottom:12px;'
+            'border-radius:6px;border:2px solid #ef5350;">'
+            '<h3 style="margin:0 0 8px 0;">⚠️ CRITICAL: Vector Database Offline</h3>'
+            f'<p style="margin:0 0 6px 0;"><strong>{status}</strong></p>'
+            "<p style=\"margin:0;\">Document uploads will fail. "
+            "Ensure the <code>qdrant</code> container is running: "
+            "<code>docker compose ps</code></p>"
+            "</div>"
+        )
+    return ""
 
 
 def create_ui():
@@ -771,6 +900,11 @@ def create_ui():
     with gr.Blocks(title="Industrial-Grade Zero-VRAM RAG System") as demo:
         gr.Markdown("# 🛡️ Industrial-Grade Zero-VRAM RAG System")
         gr.Markdown("Enterprise Self-Correcting CRAG engine powered by Qwen-2.5, Qdrant & Zero-VRAM FastEmbed.")
+
+        # ── Pre-flight Infrastructure Banner ──────────────────────────────────
+        # Initialized empty; populated reactively by demo.load → get_infra_banner().
+        # Renders a red block if Qdrant is unreachable, invisible otherwise.
+        infra_banner = gr.HTML(value="")
 
         # ── DB Status Bar ──────────────────────────────────────────────────────
         with gr.Row():
@@ -834,8 +968,9 @@ def create_ui():
                 )
 
         # ── Event Handlers: Segregated Pipelines ───────────────────────────────
-        # Populate DB status on page load without blocking UI render
+        # Both loads fire async on page load — no blocking at startup
         demo.load(fn=get_db_status, inputs=[], outputs=db_status)
+        demo.load(fn=get_infra_banner, inputs=[], outputs=infra_banner)
 
         clear_db_btn.click(fn=clear_db, inputs=[], outputs=db_status)
 

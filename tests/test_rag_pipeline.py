@@ -211,6 +211,43 @@ def test_zero_vram_retriever_threads_and_pipeline():
     assert mock_reranker.rerank.called
 
 
+def test_retriever_query_points_modern_api():
+    """
+    Verify ZeroVRAMRetriever seamlessly integrates with modern qdrant-client query_points() API.
+    """
+    from scripts.context_assembler import ZeroVRAMRetriever
+    from unittest.mock import MagicMock
+
+    class MockScoredPoint:
+        def __init__(self, point_id, score, text):
+            self.id = point_id
+            self.score = score
+            self.payload = {"text": text, "source": "modern_doc.pdf"}
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.points = [
+        MockScoredPoint(i, 0.95 - (i * 0.05), f"Modern query_points passage #{i}")
+        for i in range(5)
+    ]
+    mock_client.query_points.return_value = mock_response
+
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [[0.1] * 384]
+
+    retriever = ZeroVRAMRetriever(
+        client=mock_client,
+        embedding_model=mock_embedder,
+        threads=4
+    )
+
+    candidates = retriever.retrieve_candidates("test query with query_points", limit=5)
+    assert len(candidates) == 5
+    assert candidates[0]["id"] == 0
+    assert "Modern query_points passage #0" in candidates[0]["text"]
+    assert mock_client.query_points.called
+
+
 def test_rag_chain_with_zero_vram_retriever(monkeypatch):
     """
     Verify rag_chain in run_rag.py accepts ZeroVRAMRetriever and formats prompt context correctly.
@@ -230,7 +267,7 @@ def test_rag_chain_with_zero_vram_retriever(monkeypatch):
     response = rag_chain("What is MLOps?", None, mock_retriever, "qwen2.5:7b-fenced")
 
     assert response == "Generated response from fenced model"
-    mock_retriever.retrieve_and_rerank.assert_called_once_with("What is MLOps?", retrieve_limit=20, rerank_top_k=5)
+    mock_retriever.retrieve_and_rerank.assert_called_once_with("What is MLOps?", retrieve_limit=50, rerank_top_k=10)
     mock_ollama_llm.assert_called_once_with("What is MLOps?", "Passage 1 content\n\nPassage 2 content", "qwen2.5:7b-fenced")
 
 
@@ -493,7 +530,9 @@ def test_process_ingestion_zero_byte_and_fault_tolerance(tmp_path, monkeypatch):
 
     res_batch = process_ingestion([str(empty_file), str(corrupt_file), str(valid_file)])
     msg_batch = res_batch[0] if isinstance(res_batch, tuple) else res_batch
-    assert "Ingestion complete: 1 file(s) indexed" in msg_batch
+    # Format is now "processed/total file(s) indexed"
+    assert "Ingestion complete:" in msg_batch
+    assert "1/" in msg_batch
     assert "zero_byte.pdf" in msg_batch
     assert mock_indexer.index_chunks.called
 

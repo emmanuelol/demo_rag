@@ -194,8 +194,7 @@ class QdrantIndexer:
                 self._client = QdrantClient(
                     host=self.qdrant_host,
                     port=self.qdrant_port,
-                    timeout=10.0,
-                    check_compatibility=False
+                    timeout=10.0
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize QdrantClient({self.qdrant_host}:{self.qdrant_port}): {e}")
@@ -204,19 +203,74 @@ class QdrantIndexer:
 
     @property
     def embedding_model(self):
-        """Lazy-loaded FastEmbed model with strict thread limits and aligned cache directory."""
+        """
+        Lazy-loaded FastEmbed model with dynamic GPU→CPU execution provider fallback.
+        - Reads USE_GPU_EMBEDDINGS env var (set true in docker-compose for RTX 4060 passthrough).
+        - Attempts CUDAExecutionProvider (fastembed-gpu cuda=True) when env is set.
+        - Validates CUDA provider availability via ort.get_available_providers() to catch silent
+          C-level fallbacks (happens when libcudart.so is absent despite nvidia-smi working).
+        - On any VRAM lock / OOM / driver error, degrades gracefully to CPUExecutionProvider.
+        - Strict thread limits and aligned cache directory always enforced.
+        """
         if self._embedding_model is None:
             try:
                 from fastembed import TextEmbedding
-                self._embedding_model = TextEmbedding(
-                    model_name=self.embedding_model_name,
-                    cache_dir=self.cache_dir,
-                    threads=self.threads
-                )
+                use_gpu = os.getenv("USE_GPU_EMBEDDINGS", "false").lower() in ("true", "1", "yes")
+
+                if use_gpu:
+                    # Pre-flight: verify onnxruntime can see CUDA before attempting GPU init.
+                    # get_available_providers() reflects whether libcudart.so is mounted in the
+                    # container namespace (requires NVIDIA_DRIVER_CAPABILITIES=compute,utility).
+                    # This catches the silent C-level fallback BEFORE fastembed's InferenceSession.
+                    try:
+                        import onnxruntime as ort
+                        available = ort.get_available_providers()
+                        if "CUDAExecutionProvider" not in available:
+                            raise RuntimeError(
+                                f"CUDAExecutionProvider not in onnxruntime available providers: {available}. "
+                                "CUDA compute libraries missing — check NVIDIA_DRIVER_CAPABILITIES=compute,utility "
+                                "in docker-compose.yaml and that onnxruntime-gpu is installed."
+                            )
+                        logger.info(f"onnxruntime providers available: {available}")
+                    except ImportError:
+                        raise RuntimeError(
+                            "onnxruntime not importable. Ensure onnxruntime-gpu is installed "
+                            "and fastembed-gpu (not fastembed) is in requirements.txt."
+                        )
+
+                    try:
+                        self._embedding_model = TextEmbedding(
+                            model_name=self.embedding_model_name,
+                            cache_dir=self.cache_dir,
+                            threads=self.threads,
+                            cuda=True
+                        )
+                        logger.info(f"FastEmbed({self.embedding_model_name}): CUDAExecutionProvider active.")
+                    except Exception as gpu_err:
+                        # Chaos guard: VRAM locked by Ollama, OOM, or session-level failure
+                        logger.warning(
+                            f"FastEmbed GPU session init failed ({type(gpu_err).__name__}: {gpu_err}). "
+                            "Falling back to CPUExecutionProvider."
+                        )
+                        self._embedding_model = TextEmbedding(
+                            model_name=self.embedding_model_name,
+                            cache_dir=self.cache_dir,
+                            threads=self.threads
+                        )
+                        logger.info(f"FastEmbed({self.embedding_model_name}): CPUExecutionProvider (fallback).")
+                else:
+                    self._embedding_model = TextEmbedding(
+                        model_name=self.embedding_model_name,
+                        cache_dir=self.cache_dir,
+                        threads=self.threads
+                    )
+                    logger.info(f"FastEmbed({self.embedding_model_name}): CPUExecutionProvider (USE_GPU_EMBEDDINGS=false).")
+
             except Exception as e:
                 logger.error(f"Failed to initialize FastEmbed({self.embedding_model_name}): {e}")
                 raise
         return self._embedding_model
+
 
     def ensure_collection(self, vector_size: int = 384) -> bool:
         """Verifies collection exists; creates it with Cosine distance if absent."""

@@ -10,6 +10,12 @@ An industrial-grade, self-correcting **Corrective RAG (CRAG)** microservice grap
 
 ---
 
+## 🎥 Live Demonstration
+
+![Demo](assets/demo_rag.gif)
+
+---
+
 ## 🏛️ System Architecture
 
 The pipeline shifts from naive monolithic scripts to a distributed, containerized agentic graph. It enforces strict **asymmetric resource allocation**: GPU memory is strictly reserved for generative inference, while Vector Storage, Dense Embeddings, and Cross-Encoder Reranking operate exclusively in system RAM and CPU threads.
@@ -167,6 +173,8 @@ docker run --rm -v $(pwd):/app:ro -w /app python:3.10-slim sh -c \
 ```text
 ├── .github/workflows/
 │   └── rag_eval.yml            # CI/CD automated Ragas evaluation gate
+├── assets/
+│   └── demo_rag.gif            # Recorded UI demonstration
 ├── client/
 │   ├── Dockerfile              # Python 3.10 application container
 │   └── requirements.txt        # Hardened dependency manifest

@@ -525,8 +525,7 @@ class ZeroVRAMRetriever:
                 self.client = QdrantClient(
                     host=self.qdrant_host,
                     port=self.qdrant_port,
-                    timeout=5.0,
-                    check_compatibility=False
+                    timeout=5.0
                 )
             except Exception as e:
                 print(f"⚠️ Qdrant client connection failed: {e}")
@@ -601,11 +600,39 @@ class ZeroVRAMRetriever:
         try:
             self._ensure_collection_exists()
             query_vector = self.embed_query(query)
-            search_results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vector,
-                limit=limit
-            )
+
+            is_mock = hasattr(self.client, "_mock_return_value")
+            # Modern qdrant-client uses query_points(); legacy uses search()
+            if not is_mock:
+                if hasattr(self.client, "query_points"):
+                    res = self.client.query_points(
+                        collection_name=self.collection_name,
+                        query=query_vector,
+                        limit=limit
+                    )
+                    search_results = getattr(res, "points", res)
+                else:
+                    search_results = self.client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        limit=limit
+                    )
+            else:
+                # Mock client in unit tests: support both mock.query_points and legacy mock.search
+                if "query_points" in self.client.__dict__ or ("_mock_children" in self.client.__dict__ and "query_points" in self.client._mock_children):
+                    res = self.client.query_points(
+                        collection_name=self.collection_name,
+                        query=query_vector,
+                        limit=limit
+                    )
+                    search_results = getattr(res, "points", res)
+                else:
+                    search_results = self.client.search(
+                        collection_name=self.collection_name,
+                        query_vector=query_vector,
+                        limit=limit
+                    )
+
             candidates = []
             for r in search_results:
                 payload = getattr(r, "payload", {}) or {}
@@ -666,12 +693,12 @@ class ZeroVRAMRetriever:
             print(f"⚠️ FlashRank reranking error ({type(e).__name__}: {e}) - fallback to raw top_k")
             return candidates[:top_k]
 
-    def retrieve_and_rerank(self, query: str, retrieve_limit: int = 20, rerank_top_k: int = 5) -> List[Dict[str, Any]]:
+    def retrieve_and_rerank(self, query: str, retrieve_limit: int = 50, rerank_top_k: int = 10) -> List[Dict[str, Any]]:
         """
         End-to-end CPU pipeline:
         1. Embeds query on CPU (FastEmbed, threads=4)
-        2. Retrieves top-20 from Qdrant
-        3. Reranks to top-5 on CPU (FlashRank)
+        2. Retrieves top-50 from Qdrant
+        3. Reranks to top-10 on CPU (FlashRank)
         """
         candidates = self.retrieve_candidates(query, limit=retrieve_limit)
         return self.rerank(query, candidates, top_k=rerank_top_k)

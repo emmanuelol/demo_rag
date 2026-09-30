@@ -36,22 +36,24 @@ def grade_single_document(
     model_name = model_name or os.getenv("OLLAMA_GRADER_MODEL", "qwen2.5:7b-fenced")
 
     grading_prompt = (
-        "You are an objective evaluator assessing whether a retrieved document contains relevant information to answer a user question.\n\n"
+        "You are a helpful assistant assessing document relevance.\n\n"
         "Retrieved Document:\n\"\"\"{doc_text}\"\"\"\n\n"
         "User Question:\n\"\"\"{query}\"\"\"\n\n"
-        "Give a binary score 'yes' or 'no' indicating whether the document contains information relevant to the question.\n"
+        "Does this document contain ANY information that could help answer the question?\n"
+        "Answer 'yes' if there is even partial relevance, 'no' only if completely irrelevant.\n"
         "Answer with ONLY 'yes' or 'no'."
-    ).format(doc_text=doc_text[:4000], query=query)
+    ).format(doc_text=doc_text[:8000], query=query)
 
     try:
         if client is None and Client is not None:
             client = Client(host=base_url, timeout=5.0)
 
         if client is not None:
+            num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
             response = client.chat(
                 model=model_name,
                 messages=[{"role": "user", "content": grading_prompt}],
-                options={"temperature": 0.0, "num_ctx": 2048}
+                options={"temperature": 0.0, "num_ctx": num_ctx}
             )
             raw = (
                 response.get("message", {}).get("content", "")
@@ -59,7 +61,11 @@ def grade_single_document(
                 else getattr(getattr(response, "message", None), "content", "")
             ).strip().lower()
 
-            return bool("yes" in raw or "true" in raw or "relevant" in raw)
+            if "yes" in raw or "true" in raw:
+                return True
+            if "no" in raw or "false" in raw:
+                return False
+            return bool("relevant" in raw and "not relevant" not in raw and "irrelevant" not in raw)
     except Exception as e:
         print(f"⚠️ Document grading error ({type(e).__name__}: {e}) - permissive fallback")
         return True
