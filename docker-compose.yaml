@@ -93,6 +93,7 @@ services:
       - GRADIO_SHARE=${GRADIO_SHARE:-false}
       - FASTEMBED_CACHE_PATH=/root/.cache/fastembed
       - USE_GPU_EMBEDDINGS=${USE_GPU_EMBEDDINGS:-false}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     ports:
       - "${GRADIO_PORT:-7860}:${GRADIO_SERVER_PORT:-7860}"
     depends_on:

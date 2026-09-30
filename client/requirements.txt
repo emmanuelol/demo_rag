@@ -1,5 +1,8 @@
 qdrant-client>=1.9.1
-fastembed>=0.2.7
+# fastembed-gpu replaces fastembed (CPU). Both share the same namespace — cannot coexist.
+# fastembed-gpu 0.8.x requires onnxruntime-gpu; pip will install it as a transitive dep,
+# but we pin explicitly to avoid ABI mismatches. ~=1.20.0 is the min ABI for 0.8.x.
+fastembed-gpu>=0.8.0
 flashrank>=0.2.0
 ollama
 google-generativeai 
@@ -26,10 +29,9 @@ scikit-learn>=1.3.0
 tqdm>=4.65.0
 pyyaml>=6.0.0
 pytest-xdist>=3.5.0
-# Optional: GPU-accelerated ONNX runtime for FastEmbed CUDAExecutionProvider.
-# Only effective when USE_GPU_EMBEDDINGS=true and nvidia drivers are present.
-# fastembed auto-selects CUDA when this package is installed and CUDA is available.
-onnxruntime-gpu~=1.19.0
+# onnxruntime-gpu: explicit pin for ABI stability with fastembed-gpu>=0.8.0.
+# fastembed-gpu installs this transitively but pinning avoids resolver drift.
+onnxruntime-gpu~=1.20.0
 
 
 
