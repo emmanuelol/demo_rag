@@ -678,20 +678,21 @@ def process_ingestion(
             threads=4
         )
 
-        # 3. Per-file load → chunk → micro-batch index
+        # 3. Per-file load → chunk → micro-batch index with fractional multi-stage progress
         for i, item in enumerate(valid_files):
             file_path = item.name if hasattr(item, 'name') else str(item)
             fname = Path(file_path).name
-            file_fraction_start = i / total
-            file_fraction_end = (i + 1) / total
-
-            progress(file_fraction_start, desc=f"📖 Parsing {fname} ({i + 1}/{total})")
+            file_weight = 1.0 / total
+            base_prog = i * file_weight
+            file_fraction_end = (i + 1) * file_weight
 
             if _is_gradio_artifact(file_path):
                 temp_files_to_clean.append(os.path.abspath(file_path))
 
             try:
-                # Load
+                # --- STAGE 1: I/O Loading (10% of file slice) ---
+                progress(base_prog + (0.05 * file_weight), desc=f"📄 Stage 1/3: Reading {fname} ({i + 1}/{total})...")
+
                 if PyPDFLoader is None:
                     print(f"⚠️ PyPDFLoader unavailable, skipping {fname}")
                     skipped_files.append((fname, "PyPDFLoader not installed"))
@@ -710,7 +711,9 @@ def process_ingestion(
                     skipped_files.append((fname, "No pages extracted"))
                     continue
 
-                # Chunk
+                # --- STAGE 2: Splitting & Preparation (20% of file slice) ---
+                progress(base_prog + (0.15 * file_weight), desc=f"✂️ Stage 2/3: Chunking {fname} ({i + 1}/{total})...")
+
                 if RecursiveCharacterTextSplitter is not None:
                     splitter = RecursiveCharacterTextSplitter(
                         chunk_size=int(chunk_size),
@@ -736,16 +739,20 @@ def process_ingestion(
                     c_id = generate_deterministic_chunk_id(text, meta)
                     prepared_chunks.append({"id": c_id, "text": text, "metadata": meta})
 
-                # 🚀 Micro-batch index: yields to Gradio WebSocket every 32 chunks
+                # --- STAGE 3: Embedding & Indexing (70% of file slice) ---
                 batch_size = 32
                 total_batches = max(1, (len(prepared_chunks) + batch_size - 1) // batch_size)
 
-                for b_idx in progress.tqdm(
-                    range(total_batches),
-                    desc=f"⚡ Embedding {fname}"
-                ):
+                for b_idx in range(total_batches):
+                    batch_fraction = (b_idx / total_batches) * (0.70 * file_weight)
+                    current_prog = base_prog + (0.30 * file_weight) + batch_fraction
+                    progress(
+                        current_prog,
+                        desc=f"🧠 Stage 3/3: Embedding {fname} ({b_idx + 1}/{total_batches})"
+                    )
+
                     start_idx = b_idx * batch_size
-                    batch = prepared_chunks[start_idx: start_idx + batch_size]
+                    batch = prepared_chunks[start_idx : start_idx + batch_size]
                     indexer.index_chunks(batch, batch_size=len(batch), show_progress=False)
 
                 # Track successfully indexed sources
@@ -755,7 +762,7 @@ def process_ingestion(
                         successful_sources.add(str(src))
 
                 processed_count += 1
-                progress(file_fraction_end, desc=f"✅ Done: {fname}")
+                progress(file_fraction_end, desc=f"✅ Done: {fname} ({i + 1}/{total})")
 
             except Exception as e:
                 print(f"⚠️ Failed to process {fname}: {type(e).__name__}: {e}")
