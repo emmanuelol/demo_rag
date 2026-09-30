@@ -6,9 +6,17 @@ pid=$!
 
 # Wait for Ollama to be ready
 echo "Waiting for Ollama to start..."
-until curl -s http://localhost:11434 > /dev/null; do
-    sleep 2
+counter=0
+max_attempts=60
+until ollama list >/dev/null 2>&1; do
+    sleep 1
+    counter=$((counter + 1))
+    if [ $counter -ge $max_attempts ]; then
+        echo "❌ Fatal: Timed out waiting for Ollama server to become responsive after ${max_attempts}s."
+        exit 1
+    fi
 done
+echo "🟢 Ollama server is ready."
 
 # Pull the model(s) if not already present
 MODELS=${OLLAMA_MODELS:-${MODEL_NAME:-"qwen2.5:7b-instruct-q4_K_M"}}

@@ -53,7 +53,7 @@ docker run --name $container_name -d --rm --privileged \
 
 # Wait for Ollama to become responsive
 echo "Waiting for Ollama container to be responsive..."
-docker exec $container_name bash -c "until curl -s http://127.0.0.1:11434 > /dev/null; do sleep 2; done"
+docker exec $container_name bash -c "until ollama list >/dev/null 2>&1; do sleep 1; done"
 
 # Build and verify fenced model with parameterized context and temperature
 echo "Configuring fenced model qwen2.5:7b-fenced..."

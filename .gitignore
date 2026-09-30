@@ -14,3 +14,4 @@ local_codegraph*
 target_context*
 targeted_context*
 .cache/
+.ipynb_checkpoints/

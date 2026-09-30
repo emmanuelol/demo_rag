@@ -197,20 +197,60 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
                 if os.path.exists(file_path):
                     if _is_gradio_artifact(file_path):
                         temp_files_to_clean.append(os.path.abspath(file_path))
+
+                    # Pre-flight check: skip 0-byte files to prevent EmptyFileError
+                    try:
+                        if os.path.getsize(file_path) == 0:
+                            print(f"⚠️ Pre-flight check: Skipping 0-byte file: {file_path}")
+                            continue
+                    except OSError as e:
+                        print(f"⚠️ Pre-flight error checking file size {file_path}: {e}")
+                        continue
+
+                    # Fault-tolerant document loader
                     if PyPDFLoader is not None:
-                        loader = PyPDFLoader(file_path=file_path)
-                        data.extend(loader.load())
+                        try:
+                            loader = PyPDFLoader(file_path=file_path)
+                            loaded_docs = loader.load()
+                            if loaded_docs:
+                                data.extend(loaded_docs)
+                        except Exception as e:
+                            print(f"⚠️ Document loader error on {file_path} ({type(e).__name__}: {e}). Skipping file.")
         elif isinstance(pdf_source, str):
             if os.path.isdir(pdf_source):
-                if PyPDFDirectoryLoader is not None:
-                    loader = PyPDFDirectoryLoader(path=pdf_source)
-                    data.extend(loader.load())
+                for p in sorted(Path(pdf_source).glob("**/*.pdf")):
+                    f_str = str(p)
+                    try:
+                        if os.path.getsize(f_str) == 0:
+                            print(f"⚠️ Pre-flight check: Skipping 0-byte file in directory: {f_str}")
+                            continue
+                        if PyPDFLoader is not None:
+                            try:
+                                loader = PyPDFLoader(file_path=f_str)
+                                loaded_docs = loader.load()
+                                if loaded_docs:
+                                    data.extend(loaded_docs)
+                            except Exception as e:
+                                print(f"⚠️ Document loader error on {f_str} ({type(e).__name__}: {e}). Skipping file.")
+                    except OSError as e:
+                        print(f"⚠️ Pre-flight error checking file size {f_str}: {e}")
+                        continue
             elif os.path.isfile(pdf_source):
                 if _is_gradio_artifact(pdf_source):
                     temp_files_to_clean.append(os.path.abspath(pdf_source))
-                if PyPDFLoader is not None:
-                    loader = PyPDFLoader(file_path=pdf_source)
-                    data.extend(loader.load())
+                try:
+                    if os.path.getsize(pdf_source) == 0:
+                        print(f"⚠️ Pre-flight check: Skipping 0-byte file: {pdf_source}")
+                    elif PyPDFLoader is not None:
+                        try:
+                            loader = PyPDFLoader(file_path=pdf_source)
+                            loaded_docs = loader.load()
+                            if loaded_docs:
+                                data.extend(loaded_docs)
+                        except Exception as e:
+                            print(f"⚠️ Document loader error on {pdf_source} ({type(e).__name__}: {e}). Skipping file.")
+                except OSError as e:
+                    print(f"⚠️ Pre-flight error checking file size {pdf_source}: {e}")
             else:
                 raise FileNotFoundError(f"Path not found: {pdf_source}")
         else:
@@ -261,6 +301,12 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
         collection_name=collection_name,
         threads=4
     )
+    successful_sources = set()
+    for doc in data:
+        src = getattr(doc, "metadata", {}).get("source")
+        if src:
+            successful_sources.add(str(src))
+    retriever.successful_files = list(successful_sources)
     return text_splitter, None, retriever
 
 
@@ -503,7 +549,16 @@ def rag_chain(question, text_splitter, retriever, model_embedding):
 
 
 
-def ask_question(pdf_bytes, question, create_embeddings, reset_vectorstore, embeddings_directory, model_embedding, chunk_size, chunk_overlap):
+def ask_question(
+    pdf_bytes: Any,
+    question: str,
+    create_embeddings: bool = False,
+    reset_vectorstore: bool = False,
+    embeddings_directory: Optional[str] = None,
+    model_embedding: str = "qwen2.5:7b-fenced",
+    chunk_size: int = 500,
+    chunk_overlap: int = 100
+) -> str:
     if not question or not str(question).strip():
         return "Error: Question cannot be empty."
 
@@ -548,12 +603,279 @@ def ask_question(pdf_bytes, question, create_embeddings, reset_vectorstore, embe
     return result
 
 
+def process_ingestion(
+    pdf_files: Optional[List[Any]],
+    chunk_size: int = 500,
+    chunk_overlap: int = 100,
+    reset_vectorstore: bool = False,
+    progress: gr.Progress = gr.Progress()
+) -> Tuple[str, str]:
+    """
+    Decoupled ingestion handler with real-time progress tracking.
+    Performs pre-flight zero-byte file filtering, fault-tolerant batch parsing,
+    chunking, and Qdrant index upserting without touching the LLM or chat state machine.
+    Returns (status_message, db_status) tuple for dual UI output binding.
+    """
+    if not pdf_files:
+        return "Error: No PDF files uploaded for ingestion.", get_db_status()
+
+    progress(0, desc="Validating files...")
+
+    # 1. Pre-flight 0-byte filtering & validation
+    valid_files = []
+    skipped_files = []
+
+    for item in pdf_files:
+        file_path = item.name if hasattr(item, 'name') else str(item)
+        if not os.path.exists(file_path):
+            skipped_files.append((os.path.basename(file_path), "File not found"))
+            continue
+        try:
+            size = os.path.getsize(file_path)
+            if size == 0:
+                print(f"⚠️ Pre-flight check: Skipping 0-byte file: {file_path}")
+                skipped_files.append((os.path.basename(file_path), "0.0 B empty file"))
+                continue
+            valid_files.append(item)
+        except OSError as e:
+            skipped_files.append((os.path.basename(file_path), str(e)))
+
+    if not valid_files:
+        msg = "Error: All uploaded files were empty (0 bytes) or inaccessible."
+        if skipped_files:
+            msg += f" Skipped: {', '.join(f'{f} ({r})' for f, r in skipped_files)}"
+        return msg, get_db_status()
+
+    q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
+    q_port = os.getenv("QDRANT_PORT", "6333")
+    embeddings_endpoint = os.getenv("QDRANT_URL", f"http://{q_host}:{q_port}")
+    model_name = "qwen2.5:7b-fenced"
+    total = len(valid_files)
+
+    try:
+        # Emit per-file progress ticks before batch hand-off to process_pdf
+        for i, item in enumerate(valid_files):
+            fname = os.path.basename(item.name if hasattr(item, 'name') else str(item))
+            progress((i + 1) / (total + 1), desc=f"Indexing {fname} ({i + 1}/{total})")
+
+        progress(total / (total + 1), desc="Finalizing index...")
+        text_splitter, vectorstore, retriever = process_pdf(
+            pdf_source=valid_files,
+            model_embedding=model_name,
+            persist_directory=embeddings_endpoint,
+            chunk_size=int(chunk_size),
+            chunk_overlap=int(chunk_overlap),
+            reset_existing=reset_vectorstore
+        )
+    except Exception as e:
+        return f"Error during document ingestion: {type(e).__name__}: {str(e)}", get_db_status()
+
+    if retriever is None:
+        return "Error: Document parsing yielded no valid text chunks to index.", get_db_status()
+
+    progress(1.0, desc="Complete!")
+
+    successful_count = (
+        len(retriever.successful_files)
+        if hasattr(retriever, "successful_files") and retriever.successful_files
+        else len(valid_files)
+    )
+    status_msg = f"✅ Ingestion complete: {successful_count} file(s) indexed into Qdrant."
+    if skipped_files:
+        status_msg += f" (Skipped {len(skipped_files)} corrupted/0-byte files: {', '.join(f[0] for f in skipped_files)})"
+    return status_msg, get_db_status()
+
+
+def process_query(question: Any = "", *args, **kwargs) -> str:
+    """
+    Decoupled chat query handler.
+    Strictly accepts user text query and dispatches to CRAG state machine.
+    Maintains polymorphic backwards compatibility for legacy callers.
+    """
+    # Handle legacy positional signature: process_query(pdf_files, question, ...)
+    if isinstance(question, (list, tuple)) and args:
+        question = args[0]
+    elif not isinstance(question, str):
+        question = str(question) if question else ""
+
+    if not question or not str(question).strip():
+        return "Error: Question cannot be empty."
+
+    q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
+    q_port = os.getenv("QDRANT_PORT", "6333")
+    embeddings_endpoint = os.getenv("QDRANT_URL", f"http://{q_host}:{q_port}")
+    model_name = "qwen2.5:7b-fenced"
+
+    return ask_question(
+        pdf_bytes=None,
+        question=question,
+        create_embeddings=False,
+        reset_vectorstore=False,
+        embeddings_directory=embeddings_endpoint,
+        model_embedding=model_name
+    )
+
+
+
+def get_db_status() -> str:
+    """
+    Queries Qdrant for live collection vector count.
+    Returns a human-readable status string safe for display in gr.Textbox.
+    Fault-tolerant: never raises — returns degraded status on any connection error.
+    """
+    q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
+    q_port = int(os.getenv("QDRANT_PORT", "6333"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
+    try:
+        from qdrant_client import QdrantClient
+        client = QdrantClient(host=q_host, port=q_port, timeout=3.0)
+        info = client.get_collection(collection_name)
+        count = info.vectors_count if info.vectors_count is not None else 0
+        return f"🟢 Ready: {count:,} vector(s) in '{collection_name}'"
+    except Exception as e:
+        err = str(e)
+        if "not found" in err.lower() or "doesn't exist" in err.lower() or "404" in err:
+            return f"🟡 Empty: Collection '{collection_name}' does not exist yet."
+        return f"🔴 Unreachable: Qdrant at {q_host}:{q_port} ({type(e).__name__})"
+
+
+def clear_db() -> str:
+    """
+    Atomically wipes the Qdrant collection for a clean slate.
+    Uses delete_collection (not filesystem rmtree) because this repo targets
+    a networked Qdrant service — there is no local vector folder to wipe.
+    """
+    q_host = os.getenv("QDRANT_HOST", "qdrant" if os.path.exists("/.dockerenv") else "localhost")
+    q_port = int(os.getenv("QDRANT_PORT", "6333"))
+    collection_name = os.getenv("QDRANT_COLLECTION", "demo_collection")
+    try:
+        from qdrant_client import QdrantClient
+        client = QdrantClient(host=q_host, port=q_port, timeout=5.0)
+        collections = [c.name for c in client.get_collections().collections]
+        if collection_name in collections:
+            client.delete_collection(collection_name)
+        return get_db_status()
+    except Exception as e:
+        return f"🔴 Clear failed: {type(e).__name__}: {e}"
+
+
+def create_ui():
+    """
+    Constructs decoupled industrial-grade Gradio Blocks interface.
+    Segregates Ingestion Zone (ETL) from Chat Zone (CRAG Querying)
+    to prevent WebSocket timeout and eliminate hidden state.
+    """
+    if gr is None:
+        raise ImportError("Gradio is not installed.")
+
+    with gr.Blocks(title="Industrial-Grade Zero-VRAM RAG System") as demo:
+        gr.Markdown("# 🛡️ Industrial-Grade Zero-VRAM RAG System")
+        gr.Markdown("Enterprise Self-Correcting CRAG engine powered by Qwen-2.5, Qdrant & Zero-VRAM FastEmbed.")
+
+        # ── DB Status Bar ──────────────────────────────────────────────────────
+        with gr.Row():
+            db_status = gr.Textbox(
+                value="Checking...",
+                label="📊 Vector Database Status",
+                interactive=False,
+                scale=4
+            )
+            clear_db_btn = gr.Button("🗑️ Clear Vector DB", variant="stop", scale=1)
+
+        with gr.Row():
+            # Ingestion Zone (ETL Pipeline)
+            with gr.Column(scale=1):
+                gr.Markdown("### 📂 Ingestion Zone (ETL Pipeline)")
+                pdf_input = gr.Files(
+                    label="Upload PDF file(s)",
+                    file_types=[".pdf"]
+                )
+                chunk_size_slider = gr.Slider(
+                    minimum=100,
+                    maximum=2000,
+                    value=500,
+                    step=50,
+                    label="chunk size"
+                )
+                chunk_overlap_slider = gr.Slider(
+                    minimum=0,
+                    maximum=500,
+                    value=100,
+                    step=10,
+                    label="chunk overlap"
+                )
+                reset_vectorstore_chk = gr.Checkbox(
+                    value=False,
+                    label="reset vector store",
+                    info="Wipe existing embeddings before ingesting new documents"
+                )
+                ingest_btn = gr.Button("⚙️ Create Vectors & Ingest", variant="secondary")
+                ingest_status = gr.Textbox(
+                    label="Ingestion Status",
+                    lines=3,
+                    interactive=False
+                )
+
+            # Chat Zone (CRAG Query Engine)
+            with gr.Column(scale=2):
+                gr.Markdown("### 💬 Chat Zone (CRAG Query Engine)")
+                question_input = gr.Textbox(
+                    label="Ask a question",
+                    placeholder="Enter your question here...",
+                    lines=3
+                )
+                with gr.Row():
+                    submit_btn = gr.Button("Submit Query", variant="primary")
+                    clear_btn = gr.Button("Clear")
+                output_box = gr.Textbox(
+                    label="Response",
+                    lines=10,
+                    interactive=False
+                )
+
+        # ── Event Handlers: Segregated Pipelines ───────────────────────────────
+        # Populate DB status on page load without blocking UI render
+        demo.load(fn=get_db_status, inputs=[], outputs=db_status)
+
+        clear_db_btn.click(fn=clear_db, inputs=[], outputs=db_status)
+
+        ingest_btn.click(
+            fn=process_ingestion,
+            inputs=[
+                pdf_input,
+                chunk_size_slider,
+                chunk_overlap_slider,
+                reset_vectorstore_chk
+            ],
+            outputs=[ingest_status, db_status]
+        )
+
+        submit_btn.click(
+            fn=process_query,
+            inputs=[question_input],
+            outputs=output_box
+        )
+        question_input.submit(
+            fn=process_query,
+            inputs=[question_input],
+            outputs=output_box
+        )
+        clear_btn.click(
+            fn=lambda: (None, "", "", ""),
+            inputs=[],
+            outputs=[pdf_input, ingest_status, question_input, output_box]
+        )
+
+    demo.queue()
+    return demo
+
+
 def main():
     parser = argparse.ArgumentParser(description="RAG Application CLI")
     parser.add_argument("--ingest", action="store_true", help="Ingest PDFs from a directory")
     parser.add_argument("--pdf_path", type=str, help="Path to the PDF directory")
-    parser.add_argument("--persist_dir", type=str, default="/datasets/deepseek-r1", help="Directory to persist embeddings")
-    parser.add_argument("--model", type=str, default="deepseek-r1:1.5b", help="Embedding model name")
+    parser.add_argument("--persist_dir", type=str, default="/datasets/qdrant", help="Directory to persist embeddings")
+    parser.add_argument("--model", type=str, default="qwen2.5:7b-fenced", help="Embedding model name")
     parser.add_argument("--chunk_size", type=int, default=500, help="Chunk size for text splitting")
     parser.add_argument("--chunk_overlap", type=int, default=100, help="Chunk overlap for text splitting")
     parser.add_argument("--reset", action="store_true", default=False, help="Reset / wipe persist directory before ingesting")
@@ -574,29 +896,13 @@ def main():
 
     # Default: Launch Gradio UI
     print('Loading Gradio UI...')
-
-    interface = gr.Interface(
-        fn=ask_question,
-        inputs=[
-            gr.Files(label="Upload PDF file(s) (optional)", file_types=[".pdf"]), # path to pdf
-            gr.Textbox(label="Ask a question"), # question
-            gr.Checkbox(value=False, label='create embeddings', info='check to create embeddings'), # check to create embeddings
-            gr.Checkbox(value=False, label='reset vector store', info='wipe existing embeddings before ingesting new documents'), # reset vector store
-            gr.Textbox(value='/datasets/deepseek-r1', label='Path to embeddings'), # path of the embeddings
-            gr.Dropdown(['deepseek-r1:1.5b', 'deepseek-r1:7b'], value='deepseek-r1:1.5b', label='model name'), ## model_name
-            gr.Slider(1, 1000, value=500, label='chunk size'), ## chunk_size
-            gr.Slider(1, 200, value=100, label='chunk overlap'), ## chuck_overlap
-        ],
-        outputs="textbox",
-        title="Ask questions about Machine Learning, data science and, MLOps based on Packt PDFs",
-        description="Use DeepSeek-R1 to answer your questions about the uploaded PDF documents.",
-    )
+    demo = create_ui()
 
     server_name = args.server_name or os.getenv("GRADIO_SERVER_NAME", "0.0.0.0")
     server_port = args.server_port or int(os.getenv("GRADIO_SERVER_PORT", "7860"))
     share_flag = args.share if args.share is not None else (os.getenv("GRADIO_SHARE", "False").lower() in ("true", "1", "yes"))
 
-    interface.launch(
+    demo.launch(
         server_name=server_name,
         server_port=server_port,
         share=share_flag
