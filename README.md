@@ -180,6 +180,19 @@ docker compose up -d
 
 ---
 
+## 📚 Learning Path (Tutorial Series)
+
+New to RAG systems? The [`tutorials/`](tutorials/) directory contains a progressive, 6-part hands-on notebook series that builds this system from a 20-line naive RAG to the full Corrective RAG (CRAG) architecture. No LangGraph or Docker experience required:
+
+1. [**01: The Limits of Naive RAG**](tutorials/01_naive_rag.ipynb) — Build a basic retrieval chain and observe why vector similarity fails on greetings.
+2. [**02: Adding the Router**](tutorials/02_adding_the_router.ipynb) — Intercept non-technical queries in 0ms to protect vector compute and latency.
+3. [**03: Building the Grader**](tutorials/03_building_the_grader.ipynb) — Filter out irrelevant passages before they poison generator context and cause hallucinations.
+4. [**04: The CRAG State Machine**](tutorials/04_crag_state_machine.ipynb) — Wire cyclic self-correction, query rewriting, and fallback logic using LangGraph.
+5. [**05: Hardware-Aware Fencing**](tutorials/05_hardware_fencing.ipynb) — Prevent GPU VRAM OOM and CPU starvation on consumer hardware via asymmetric resource isolation.
+6. [**06: Production Hardening**](tutorials/06_production_hardening.ipynb) — Offline evaluation with Ragas, multi-container Docker mesh, and automated CI/CD quality gates.
+
+---
+
 ## 🧪 Verification & Testing
 
 Execute the comprehensive test suite locally or inside an isolated container:
@@ -231,6 +244,14 @@ docker run --rm -v $(pwd):/app:ro -w /app python:3.10-slim sh -c \
 ├── tests/
 │   ├── test_rag_pipeline.py    # Chaos testing & vector timeout fallback tests
 │   └── test_ragas_eval.py      # Golden dataset & Ragas evaluation scoring
+├── tutorials/
+│   ├── README.md               # Tutorial track overview & setup guide
+│   ├── 01_naive_rag.ipynb      # Step 1: Naive RAG & retrieval failure modes
+│   ├── 02_adding_the_router.ipynb # Step 2: 0ms Semantic Router protection
+│   ├── 03_building_the_grader.ipynb # Step 3: Document relevance grading filter
+│   ├── 04_crag_state_machine.ipynb # Step 4: LangGraph cyclic self-correction
+│   ├── 05_hardware_fencing.ipynb # Step 5: CPU/GPU asymmetric fencing & zero-bleed
+│   └── 06_production_hardening.ipynb # Step 6: Offline Ragas eval & CI/CD quality gate
 ├── ui/
 │   └── gradio_ui.py            # Decoupled Gradio Blocks presentation layer
 ├── utils/
