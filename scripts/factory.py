@@ -3,7 +3,14 @@
 Provider-Agnostic Factory - Bridges Local (Ollama + Qdrant) and GCP (Vertex AI + Cloud Search).
 Dynamically selects and initializes LLM and Vector Store backends based on DEPLOYMENT_ENV.
 Provides graceful automatic fallback to local bare-metal when cloud credentials fail or expire.
+
+SOLID Architecture:
+  - OCP (Open/Closed): Register new providers without altering core graph orchestration.
+  - DIP (Dependency Inversion): Exposes LLMProviderProtocol and RetrieverProtocol abstractions.
+  - LSP (Liskov Substitution): Guarantees interchangeable runtime behaviors across providers.
 """
+
+from __future__ import annotations
 
 import os
 import yaml
@@ -11,6 +18,9 @@ from pathlib import Path
 from typing import Optional, Any, Dict, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Interfaces
+from scripts.protocols import RetrieverProtocol, LLMProviderProtocol
 
 # Fallback local components
 from scripts.context_assembler import ZeroVRAMRetriever
@@ -38,6 +48,13 @@ def get_deployment_env() -> str:
 
     cfg = load_config()
     return cfg.get("deployment", {}).get("environment", "local").strip().lower()
+
+
+# ─────────────────────────────────────────────────────────────
+# SOLID: Open/Closed Principle & Liskov Substitution Principle
+# Implements LLMProviderProtocol. New providers add classes without
+# modifying graph definition or consumer code.
+# ─────────────────────────────────────────────────────────────
 
 
 class LocalLLMWrapper:
@@ -76,9 +93,15 @@ class GCPVertexLLMWrapper:
         return self.generate(prompt, context)
 
 
-def get_llm_provider(deployment_env: Optional[str] = None) -> Any:
+# ─────────────────────────────────────────────────────────────
+# SOLID: Dependency Inversion Principle
+# Factory yields abstract protocols rather than concrete types.
+# ─────────────────────────────────────────────────────────────
+
+
+def get_llm_provider(deployment_env: Optional[str] = None) -> LLMProviderProtocol:
     """
-    Returns LLM provider instance for active environment.
+    Returns LLM provider instance conforming to LLMProviderProtocol.
     Gracefully degrades to Local Ollama on GCP authentication failure.
     """
     env = (deployment_env or get_deployment_env()).lower()
@@ -117,9 +140,9 @@ def get_llm_provider(deployment_env: Optional[str] = None) -> Any:
     return LocalLLMWrapper(model_name=model_name, base_url=base_url)
 
 
-def get_vector_provider(deployment_env: Optional[str] = None) -> Any:
+def get_vector_provider(deployment_env: Optional[str] = None) -> RetrieverProtocol:
     """
-    Returns Vector Store provider instance.
+    Returns Vector Store provider conforming to RetrieverProtocol.
     Gracefully degrades to local ZeroVRAMRetriever on cloud connection failure.
     """
     env = (deployment_env or get_deployment_env()).lower()
@@ -137,7 +160,6 @@ def get_vector_provider(deployment_env: Optional[str] = None) -> Any:
 
             # Simulated Vertex AI Vector Search wrapper
             print("☁️ Initializing GCP Vertex AI Vector Search provider...")
-            # If actual cloud vector client is unavailable, trigger fallback
             raise NotImplementedError("GCP Vertex Vector client requires live GCP infrastructure.")
         except Exception as e:
             print(f"⚠️ [SRE Fallback] GCP Vector Search failure ({type(e).__name__}: {e}).")
