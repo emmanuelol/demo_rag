@@ -172,16 +172,17 @@ docker compose up -d
 
 ---
 
-## 📚 Learning Path (Tutorial Series)
+## 📚 Progressive Tutorial Series
 
-New to RAG systems? The [`tutorials/`](tutorials/) directory contains a progressive, 6-part hands-on notebook series that builds this system from a 20-line naive RAG to the full Corrective RAG (CRAG) architecture. No LangGraph or Docker experience required:
+While this repository serves as a production reference architecture, it is also designed as a comprehensive tutorial for developers looking to master Agentic RAG. 
 
-1. [**01: The Limits of Naive RAG**](tutorials/01_naive_rag.ipynb) — Build a basic retrieval chain and observe why vector similarity fails on greetings.
-2. [**02: Adding the Router**](tutorials/02_adding_the_router.ipynb) — Intercept non-technical queries in 0ms to protect vector compute and latency.
-3. [**03: Building the Grader**](tutorials/03_building_the_grader.ipynb) — Filter out irrelevant passages before they poison generator context and cause hallucinations.
-4. [**04: The CRAG State Machine**](tutorials/04_crag_state_machine.ipynb) — Wire cyclic self-correction, query rewriting, and fallback logic using LangGraph.
-5. [**05: Hardware-Aware Fencing**](tutorials/05_hardware_fencing.ipynb) — Prevent GPU VRAM OOM and CPU starvation on consumer hardware via asymmetric resource isolation.
-6. [**06: Production Hardening**](tutorials/06_production_hardening.ipynb) — Offline evaluation with Ragas, multi-container Docker mesh, and automated CI/CD quality gates.
+Visit the [`tutorials/`](tutorials/) directory for a step-by-step Jupyter Notebook series that builds this system from the ground up:
+1. [**The Naive RAG**](tutorials/01_naive_rag.ipynb): Building a basic vector search pipeline and watching it hallucinate.
+2. [**The Semantic Router**](tutorials/02_adding_the_router.ipynb): Bypassing the LLM for small talk to save tokens and latency.
+3. [**The Grader**](tutorials/03_building_the_grader.ipynb): Filtering out irrelevant context before generation.
+4. [**The CRAG Loop**](tutorials/04_crag_state_machine.ipynb): Building the LangGraph self-correction state machine.
+5. [**Hardware Fencing**](tutorials/05_hardware_fencing.ipynb): Running heavy RAG workloads on consumer GPUs.
+6. [**Production Hardening**](tutorials/06_production_hardening.ipynb): Docker, CI/CD, and deterministic Ragas evaluation.
 
 ---
 
