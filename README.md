@@ -244,6 +244,13 @@ docker run --rm -v $(pwd):/app:ro -w /app python:3.10-slim sh -c \
 
 ---
 
+## 👥 Authors & Collaborators
+
+* **Emmanuel Ortiz** - Lead Architecture & Systems Design - [@emmanuelol](https://github.com/emmanuelol)
+* **Carlos Armando Ortiz Lopez** - Collaborator - [@carlosaol](https://github.com/carlosaol)
+
+---
+
 ## 📜 License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
