@@ -1,0 +1,236 @@
+# =============================================================================
+# Google Kubernetes Engine (GKE) Production Manifests - Zero-VRAM Agentic RAG
+# Topology:
+# 1. ServiceAccount with Workload Identity (GCP IAM binding)
+# 2. Arize Phoenix Deployment & ClusterIP Service (Observability / OTLP Spans)
+# 3. Qdrant Deployment & ClusterIP Service (Vector Engine + GCS FUSE CSI Mount)
+# 4. RAG Client Deployment & LoadBalancer Service (Gradio UI + CRAG Agent)
+# =============================================================================
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rag-demo-sa
+  namespace: default
+  annotations:
+    iam.gke.io/gcp-service-account: rag-workload-runner@<YOUR_PROJECT_ID>.iam.gserviceaccount.com
+---
+# -----------------------------------------------------------------------------
+# 1. OBSERVABILITY: Arize Phoenix (OTLP Spans & Tracing Web UI)
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: phoenix-deployment
+  namespace: default
+  labels:
+    app: phoenix
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: phoenix
+  template:
+    metadata:
+      labels:
+        app: phoenix
+    spec:
+      containers:
+        - name: phoenix
+          image: arizephoenix/phoenix:latest
+          ports:
+            - name: ui
+              containerPort: 6006
+            - name: otlp-grpc
+              containerPort: 4317
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 6006
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: phoenix-service
+  namespace: default
+  labels:
+    app: phoenix
+spec:
+  selector:
+    app: phoenix
+  ports:
+    - name: ui
+      port: 6006
+      targetPort: 6006
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+  type: ClusterIP
+---
+# -----------------------------------------------------------------------------
+# 2. VECTOR ENGINE: Qdrant with GCS Cloud Storage FUSE CSI Driver
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qdrant-deployment
+  namespace: default
+  labels:
+    app: qdrant
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+      annotations:
+        gke-gcsfuse/volumes: "true"
+        gke-gcsfuse/cpu-limit: "500m"
+        gke-gcsfuse/memory-limit: "512Mi"
+    spec:
+      serviceAccountName: rag-demo-sa
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.9.1
+          ports:
+            - name: http
+              containerPort: 6333
+            - name: grpc
+              containerPort: 6334
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: qdrant-gcs-storage
+              mountPath: /qdrant/storage
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6333
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: qdrant-gcs-storage
+          csi:
+            driver: gcsfuse.csi.storage.gke.io
+            volumeAttributes:
+              bucketName: "<YOUR_DEMO_BUCKET_NAME>"
+              mountOptions: "implicit-dirs"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-service
+  namespace: default
+  labels:
+    app: qdrant
+spec:
+  selector:
+    app: qdrant
+  ports:
+    - name: http
+      port: 6333
+      targetPort: 6333
+    - name: grpc
+      port: 6334
+      targetPort: 6334
+  type: ClusterIP
+---
+# -----------------------------------------------------------------------------
+# 3. APPLICATION: RAG Client (Gradio UI + CRAG State Machine + Provider Factory)
+# -----------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-client-deployment
+  namespace: default
+  labels:
+    app: rag-client
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-client
+  template:
+    metadata:
+      labels:
+        app: rag-client
+    spec:
+      serviceAccountName: rag-demo-sa
+      containers:
+        - name: rag-client
+          image: gcr.io/<YOUR_PROJECT_ID>/demo-rag-client:latest
+          ports:
+            - name: gradio
+              containerPort: 7860
+          env:
+            - name: DEPLOYMENT_ENV
+              value: "gcp"
+            - name: GCP_PROJECT_ID
+              value: "<YOUR_PROJECT_ID>"
+            - name: GCP_REGION
+              value: "us-central1"
+            - name: QDRANT_HOST
+              value: "qdrant-service"
+            - name: QDRANT_PORT
+              value: "6333"
+            - name: PHOENIX_HOST
+              value: "phoenix-service"
+            - name: PHOENIX_PORT
+              value: "4317"
+            - name: PHOENIX_COLLECTOR_ENDPOINT
+              value: "http://phoenix-service:6006"
+            - name: OTEL_EXPORTER_OTLP_TIMEOUT
+              value: "500"
+            - name: GRADIO_SERVER_NAME
+              value: "0.0.0.0"
+            - name: GRADIO_SERVER_PORT
+              value: "7860"
+            - name: OMP_NUM_THREADS
+              value: "4"
+            - name: MKL_NUM_THREADS
+              value: "4"
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          readinessProbe:
+            tcpSocket:
+              port: 7860
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-client-service
+  namespace: default
+  labels:
+    app: rag-client
+spec:
+  selector:
+    app: rag-client
+  ports:
+    - name: gradio
+      port: 7860
+      targetPort: 7860
+  type: LoadBalancer

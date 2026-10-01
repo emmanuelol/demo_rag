@@ -1,58 +1,153 @@
 services:
   ollama:
     image: ollama/ollama
-    container_name: ollama # Sets the container name to ollama
+    container_name: ollama
+    environment:
+      - OLLAMA_MODELS=${OLLAMA_MODELS:-qwen2.5:7b-instruct-q4_K_M}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-4096}
+      - OLLAMA_TEMPERATURE=${OLLAMA_TEMPERATURE:-0.2}
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_KEEP_ALIVE=5m
     ports:
-      - "11434:11434" # Maps port 11434 on the host to port 11434 in the container
-    #  - "11435:11435"
-    #environment:
-    #  - OLLAMA_HOST=127.0.0.1:11435
+      - "11434:11434"
     volumes:
       - ./entrypoint.sh:/entrypoint.sh
+      - ./scripts:/scripts:ro
+      - ollama_data:/root/.ollama
     deploy:
       resources:
         reservations:
           devices:
-            - driver: nvidia # Specifies the driver to use for GPU
-              count: 1 # Reserves 1 GPU
-              capabilities: [gpu] # Specifies that the device capability is GPU
-    #command: 'ollama pull deepseek-r1:1.5b && ollama serve'
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     tty: true
     entrypoint: ["/usr/bin/bash", "/entrypoint.sh"]
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.5
+    container_name: qdrant
+    user: "${QDRANT_USER:-0:0}"
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "(command -v curl >/dev/null && curl -sf http://127.0.0.1:6333/readyz) || (command -v wget >/dev/null && wget -qO- http://127.0.0.1:6333/readyz >/dev/null) || (command -v nc >/dev/null && nc -z 127.0.0.1 6333) || (/bin/bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/6333' 2>/dev/null) || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: phoenix
+    ports:
+      - "6006:6006"
+      - "4317:4317"
+    environment:
+      - PHOENIX_PORT=6006
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+
   client:
     build:
-      context: ./client # Specifies the build context as the ./app directory
-      dockerfile: Dockerfile # Uses the Dockerfile in the build context
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: rag_client
     working_dir: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./:/app
       - ./entrypoint_rag.sh:/entrypoint_rag.sh
-      - /media/Datos/datasets:/datasets
-      - /media/Datos/models:/models
+      - ${DATASETS_DIR:-./datasets}:/datasets
+      - ${MODELS_DIR:-./models}:/models
+      - ${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed
     environment:
-      BASE_URL: http://ollama:11434
-      GRADIO_SERVER_NAME: 0.0.0.0
-      GRADIO_SERVER_PORT: 7860
+      - BASE_URL=http://ollama:11434
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:6006
+      - OTEL_EXPORTER_OTLP_TIMEOUT=500
+      - GRADIO_SERVER_NAME=0.0.0.0
+      - GRADIO_SERVER_PORT=${GRADIO_SERVER_PORT:-7860}
+      - GRADIO_SHARE=${GRADIO_SHARE:-false}
+      - FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+      - USE_GPU_EMBEDDINGS=${USE_GPU_EMBEDDINGS:-false}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     ports:
-      - "8501:8501"
-      - "7680:7680"
+      - "${GRADIO_PORT:-7860}:${GRADIO_SERVER_PORT:-7860}"
     depends_on:
-      - ollama
-    tty: true 
-    #entrypoint: /bin/sh python run_rag.py
+      ollama:
+        condition: service_started
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    tty: true
     entrypoint: ["/usr/bin/bash", "/entrypoint_rag.sh"]
-    #command: ["python", "/app/run_rag.py"]
-    #healthcheck:
-      #test:  [ "CMD-SHELL", "bash", "-c", "{ printf >&3 'GET / HTTP/1.0\\r\\n\\r\\n'; cat <&3; } 3<>/dev/tcp/ollama/11434 | grep 'Ollama is' || exit 1"  ] 
-      #test: ["CMD-SHELL", "curl -f http://ollama:11434 || exit 1"]
-      #test: ["CMD-SHELL", "curl -f http://ollama:11434 "]
-      #interval: 20s
-      #timeout: 5s
-      #retries: 3
-      #start_period: 10s
-    
-    
 
+  notebook:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: demo_rag_notebook
+    working_dir: /app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./:/app
+      - ${FASTEMBED_CACHE_DIR:-fastembed_cache}:/root/.cache/fastembed
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - PHOENIX_HOST=phoenix
+      - PHOENIX_PORT=4317
+      - FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+    command: jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --ServerApp.token=''
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
+volumes:
+  ollama_data:
+  qdrant_data:
+  fastembed_cache:
 
 

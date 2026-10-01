@@ -1,23 +1,61 @@
 #!/bin/bash
-#export OLLAMA_HOST=127.0.0.1:11435
 
-#export OLLAMA_HOST=locahost:11435
-
-#export OLLAMA_HOST=0.0.0.0:11435
-
-# Start Ollama in the background.
-/bin/ollama serve &
-# Record Process ID.
+# Start Ollama in the background
+ollama serve &
 pid=$!
 
-# Pause for Ollama to start.
-sleep 5
+# Wait for Ollama to be ready
+echo "Waiting for Ollama to start..."
+counter=0
+max_attempts=60
+until ollama list >/dev/null 2>&1; do
+    sleep 1
+    counter=$((counter + 1))
+    if [ $counter -ge $max_attempts ]; then
+        echo "❌ Fatal: Timed out waiting for Ollama server to become responsive after ${max_attempts}s."
+        exit 1
+    fi
+done
+echo "🟢 Ollama server is ready."
 
-echo "🔴 Retrieve Deepseek-r1 model..."
-ollama pull deepseek-r1:1.5b
+# Pull the model(s) if not already present
+MODELS=${OLLAMA_MODELS:-${MODEL_NAME:-"qwen2.5:7b-instruct-q4_K_M"}}
+for model in $MODELS; do
+    echo "🔴 Ensuring model $model is available..."
+    ollama pull "$model"
+done
+
+# Dynamic Modelfile generation and fenced model build
+RENDERED_MODELFILE="/tmp/Modelfile.rendered"
+TEMPLATE_PATH=""
+
+if [ -f "/scripts/Modelfile.template" ]; then
+    TEMPLATE_PATH="/scripts/Modelfile.template"
+elif [ -f "/app/scripts/Modelfile.template" ]; then
+    TEMPLATE_PATH="/app/scripts/Modelfile.template"
+fi
+
+BASE_MODEL=${OLLAMA_BASE_MODEL:-"qwen2.5:7b-instruct-q4_K_M"}
+NUM_CTX=${OLLAMA_NUM_CTX:-4096}
+TEMP=${OLLAMA_TEMPERATURE:-0.2}
+
+if [ -n "$TEMPLATE_PATH" ]; then
+    echo "🛡️ Rendering dynamic Modelfile from $TEMPLATE_PATH (num_ctx: $NUM_CTX, temp: $TEMP)..."
+    sed -e "s|\${OLLAMA_BASE_MODEL:-[^}]*}|$BASE_MODEL|g" \
+        -e "s|\${OLLAMA_NUM_CTX:-[^}]*}|$NUM_CTX|g" \
+        -e "s|\${OLLAMA_TEMPERATURE:-[^}]*}|$TEMP|g" \
+        "$TEMPLATE_PATH" > "$RENDERED_MODELFILE"
+    ollama create qwen2.5:7b-fenced -f "$RENDERED_MODELFILE"
+elif [ -f "/scripts/Modelfile" ]; then
+    echo "🛡️ Building fenced model from static /scripts/Modelfile..."
+    ollama create qwen2.5:7b-fenced -f "/scripts/Modelfile"
+elif [ -f "/root/Modelfile" ]; then
+    echo "🛡️ Building fenced model from static /root/Modelfile..."
+    ollama create qwen2.5:7b-fenced -f "/root/Modelfile"
+fi
+
+
 echo "🟢 Done!"
-sleep 5
-# Wait for Ollama process to finish.
 
+# Keep the process running
 wait $pid
-ollama serve

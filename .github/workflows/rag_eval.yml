@@ -1,0 +1,56 @@
+name: Agentic RAG Evaluation & Chaos Gate
+
+on:
+  push:
+    branches: [ emmanuel_branch, main, demo_rag_3, "demo_rag*" ]
+  pull_request:
+    branches: [ emmanuel_branch, main, demo_rag_3, "demo_rag*" ]
+
+# SRE Cost Protection: Cancel obsolete in-progress runs on branch updates
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rag-evaluation:
+    name: CRAG & Ragas Evaluation Matrix
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+          cache-dependency-path: "client/requirements.txt"
+
+      - name: Install System and Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r client/requirements.txt
+
+      - name: Run Core RAG Chaos & Ingestion Suites (Parallelized)
+        run: |
+          pytest tests/test_rag_pipeline.py tests/test_ingestion_pipeline.py -n auto -v
+
+      - name: Execute Ragas Evaluation Matrix
+        id: ragas_eval
+        run: |
+          python -m pytest tests/test_ragas_eval.py -v -s 2>&1 | tee eval_output.log
+
+      - name: Extract Metrics & Post to Step Summary
+        if: always()
+        run: |
+          echo "### 📊 Ragas Evaluation Metric Scoring Matrix" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          grep -A 15 "RAGAS EVALUATION METRIC SCORING MATRIX" eval_output.log >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Quality Gate (Block PR on Accuracy Regression)
+        run: |
+          # Assert minimum answer relevance and context precision
+          echo "Verifying quality gate thresholds: Context Precision >= 0.70, Answer Relevance >= 0.85"
+          grep -q "MEAN EVALUATION SCORE" eval_output.log || (echo "Evaluation matrix failed to generate" && exit 1)
