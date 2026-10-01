@@ -93,7 +93,7 @@ setup_telemetry()
 def ollama_llm(question, context, model_embedding):
     formatted_prompt = f"Question: {question}\n\nContext: {context}" if context else question
     base_url = os.getenv('BASE_URL', 'http://ollama:11434')
-    timeout = float(os.getenv('OLLAMA_TIMEOUT', '60.0'))
+    timeout = float(os.getenv('OLLAMA_TIMEOUT', '120.0'))
     num_ctx = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
     temperature = float(os.getenv('OLLAMA_TEMPERATURE', '0.2'))
 
@@ -139,37 +139,7 @@ def dispatch_llm_generation(prompt: str, context: str = "", model_embedding: str
         return ollama_llm(prompt, context, model_embedding)
 
 
-def cleanup_temporary_files(file_paths: list) -> None:
-    """
-    Chaos/SRE Guard: Actively unlinks temporary uploaded PDF artifacts and prunes
-    empty temporary parent directories created by Gradio to prevent disk starvation
-    and inode exhaustion over extended testing sessions.
-    """
-    import tempfile
-    temp_dir = os.path.abspath(tempfile.gettempdir())
-
-    for path in file_paths:
-        try:
-            norm_path = os.path.abspath(str(path))
-            path_obj = Path(norm_path)
-            parts = [p.lower() for p in path_obj.parts]
-            is_gradio_temp = (
-                ("gradio" in parts or ".gradio" in parts) and
-                (norm_path.startswith(temp_dir) or ".gradio" in parts)
-            )
-            if is_gradio_temp and os.path.exists(norm_path) and os.path.isfile(norm_path):
-                parent_dir = os.path.dirname(norm_path)
-                os.unlink(norm_path)
-                # Prune parent directory if empty and isolated within gradio temp dir
-                parent_parts = [p.lower() for p in Path(parent_dir).parts]
-                if parent_dir.startswith(temp_dir) and parent_dir != temp_dir and ("gradio" in parent_parts or ".gradio" in parent_parts):
-                    try:
-                        if os.path.exists(parent_dir) and not os.listdir(parent_dir):
-                            os.rmdir(parent_dir)
-                    except OSError:
-                        pass
-        except Exception as e:
-            print(f"⚠️ Failed to clean up temp file {path}: {e}")
+from utils.ui_helpers import is_gradio_artifact, cleanup_temporary_files
 
 
 def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chunk_overlap, reset_existing=False):
@@ -182,20 +152,13 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
 
     data = []
     temp_files_to_clean = []
-    import tempfile
-    temp_dir = os.path.abspath(tempfile.gettempdir())
-
-    def _is_gradio_artifact(path_str: str) -> bool:
-        norm = os.path.abspath(path_str)
-        parts = [p.lower() for p in Path(norm).parts]
-        return ("gradio" in parts or ".gradio" in parts) and (norm.startswith(temp_dir) or ".gradio" in parts)
 
     try:
         if isinstance(pdf_source, list):
             for item in pdf_source:
                 file_path = item.name if hasattr(item, 'name') else str(item)
                 if os.path.exists(file_path):
-                    if _is_gradio_artifact(file_path):
+                    if is_gradio_artifact(file_path):
                         temp_files_to_clean.append(os.path.abspath(file_path))
 
                     # Pre-flight check: skip 0-byte files to prevent EmptyFileError
@@ -236,7 +199,7 @@ def process_pdf(pdf_source, model_embedding, persist_directory, chunk_size, chun
                         print(f"⚠️ Pre-flight error checking file size {f_str}: {e}")
                         continue
             elif os.path.isfile(pdf_source):
-                if _is_gradio_artifact(pdf_source):
+                if is_gradio_artifact(pdf_source):
                     temp_files_to_clean.append(os.path.abspath(pdf_source))
                 try:
                     if os.path.getsize(pdf_source) == 0:
@@ -341,138 +304,30 @@ def combine_docs(docs):
     return "\n\n".join(getattr(doc, "page_content", str(doc)) for doc in docs)
 
 
-class AgentState(TypedDict):
-    question: str
-    search_query: str
-    route: str
-    documents: List[Dict[str, Any]]
-    is_relevant: bool
-    generation: str
-    retry_count: int
-    max_retries: int
-    trace: List[str]
+from scripts.crag_graph import (
+    AgentState,
+    build_crag_graph as _core_build_crag_graph,
+    run_crag_agent as _core_run_crag_agent,
+    rag_chain as _core_rag_chain,
+)
 
 
 def build_crag_graph(retriever: Any, model_embedding: str, max_retries: int = 2):
     """
-    Constructs the Corrective RAG (CRAG) state machine with a hard recursion limit.
+    Constructs CRAG state machine by delegating to scripts.crag_graph.
+    Dynamically forwards grader/rewriter/router/llm callbacks to honor test monkeypatches.
     """
-    if StateGraph is None:
-        return None
-
-    def route_node(state: AgentState) -> dict:
-        route = route_query(state["question"], model_name=model_embedding)
-        return {"route": route, "trace": state.get("trace", []) + [f"route:{route}"]}
-
-    def direct_chat_node(state: AgentState) -> dict:
-        ans = ollama_llm(state["question"], context="", model_embedding=model_embedding)
-        return {"generation": ans, "trace": state.get("trace", []) + ["direct_chat"]}
-
-    def codebase_ast_node(state: AgentState) -> dict:
-        summary_ctx = (
-            "Repository architecture comprises modular services: "
-            "Semantic Router (scripts/router.py), Retrieval Grader (scripts/grader.py), "
-            "ZeroVRAMRetriever (scripts/context_assembler.py), Provider Factory (scripts/factory.py), "
-            "and LangGraph State Machine (run_rag.py)."
-        )
-        ans = ollama_llm(state["question"], context=summary_ctx, model_embedding=model_embedding)
-        return {"generation": ans, "trace": state.get("trace", []) + ["codebase_ast"]}
-
-    def retrieve_node(state: AgentState) -> dict:
-        q = state.get("search_query") or state["question"]
-        docs = []
-        if retriever is not None:
-            try:
-                if hasattr(retriever, "retrieve_and_rerank"):
-                    docs = retriever.retrieve_and_rerank(q, retrieve_limit=50, rerank_top_k=10)
-                    print(f"🔍 [CRAG Retrieval] Query='{q}' | Candidates retrieved & reranked: {len(docs)}")
-                    for idx, doc in enumerate(docs[:3]):
-                        snippet = doc.get("text", "").replace("\n", " ")[:150]
-                        print(f"   ├─ Doc {idx+1} [score={doc.get('score', 0):.4f}]: {snippet}...")
-                elif hasattr(retriever, "invoke"):
-                    raw = retriever.invoke(q)
-                    docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(raw)]
-            except Exception as e:
-                print(f"⚠️ Vector retrieval failure: {e}")
-                docs = [{"id": "fallback", "text": f"Retrieval error: {e}", "metadata": {"error": str(e)}}]
-        return {"documents": docs, "trace": state.get("trace", []) + [f"retrieve:{len(docs)}"]}
-
-    def grade_node(state: AgentState) -> dict:
-        docs = state.get("documents", [])
-        is_relevant, relevant_docs = grade_documents(state["question"], docs, model_name=model_embedding)
-        return {
-            "is_relevant": is_relevant,
-            "documents": relevant_docs,
-            "trace": state.get("trace", []) + [f"grade:{is_relevant}"]
-        }
-
-    def rewrite_node(state: AgentState) -> dict:
-        retries = state.get("retry_count", 0) + 1
-        rewritten = rewrite_query(state["question"], model_name=model_embedding)
-        return {
-            "search_query": rewritten,
-            "retry_count": retries,
-            "trace": state.get("trace", []) + [f"rewrite:{retries}"]
-        }
-
-    def generate_node(state: AgentState) -> dict:
-        docs = state.get("documents", [])
-        formatted_content = "\n\n".join(d.get("text", "") for d in docs if d.get("text"))
-        ans = ollama_llm(state["question"], formatted_content, model_embedding)
-        return {"generation": ans, "trace": state.get("trace", []) + ["generate"]}
-
-    def fallback_node(state: AgentState) -> dict:
-        msg = "I could not find sufficient relevant context in the provided documents to answer your question accurately."
-        return {"generation": msg, "trace": state.get("trace", []) + ["fallback_exhausted"]}
-
-    builder = StateGraph(AgentState)
-    builder.add_node("route_node", route_node)
-    builder.add_node("direct_chat_node", direct_chat_node)
-    builder.add_node("codebase_ast_node", codebase_ast_node)
-    builder.add_node("retrieve_node", retrieve_node)
-    builder.add_node("grade_node", grade_node)
-    builder.add_node("rewrite_node", rewrite_node)
-    builder.add_node("generate_node", generate_node)
-    builder.add_node("fallback_node", fallback_node)
-
-    builder.set_entry_point("route_node")
-
-    def route_decision(s: AgentState) -> str:
-        r = s.get("route", "vector_search")
-        if r == "general_chat":
-            return "direct_chat_node"
-        elif r == "codebase_ast":
-            return "codebase_ast_node"
-        return "retrieve_node"
-
-    builder.add_conditional_edges("route_node", route_decision, {
-        "direct_chat_node": "direct_chat_node",
-        "codebase_ast_node": "codebase_ast_node",
-        "retrieve_node": "retrieve_node"
-    })
-
-    builder.add_edge("direct_chat_node", END)
-    builder.add_edge("codebase_ast_node", END)
-    builder.add_edge("retrieve_node", "grade_node")
-
-    def grade_decision(s: AgentState) -> str:
-        if s.get("is_relevant"):
-            return "generate_node"
-        elif s.get("retry_count", 0) < s.get("max_retries", max_retries):
-            return "rewrite_node"
-        return "fallback_node"
-
-    builder.add_conditional_edges("grade_node", grade_decision, {
-        "generate_node": "generate_node",
-        "rewrite_node": "rewrite_node",
-        "fallback_node": "fallback_node"
-    })
-
-    builder.add_edge("rewrite_node", "retrieve_node")
-    builder.add_edge("generate_node", END)
-    builder.add_edge("fallback_node", END)
-
-    return builder.compile()
+    import sys
+    this_mod = sys.modules[__name__]
+    return _core_build_crag_graph(
+        retriever=retriever,
+        model_embedding=model_embedding,
+        max_retries=max_retries,
+        grader_fn=getattr(this_mod, "grade_documents", None),
+        rewriter_fn=getattr(this_mod, "rewrite_query", None),
+        router_fn=getattr(this_mod, "route_query", None),
+        llm_fn=getattr(this_mod, "ollama_llm", None),
+    )
 
 
 def run_crag_agent(
@@ -482,73 +337,36 @@ def run_crag_agent(
     max_retries: int = 2
 ) -> Tuple[str, List[str]]:
     """
-    Executes the self-correcting CRAG graph.
-    Returns (generation_text, execution_trace).
+    Executes self-correcting CRAG graph by delegating to scripts.crag_graph.
+    Dynamically forwards grader/rewriter/router/llm callbacks to honor test monkeypatches.
     """
-    graph = build_crag_graph(retriever, model_embedding, max_retries=max_retries)
-
-    if graph is not None:
-        initial_state: AgentState = {
-            "question": question,
-            "search_query": question,
-            "route": "vector_search",
-            "documents": [],
-            "is_relevant": False,
-            "generation": "",
-            "retry_count": 0,
-            "max_retries": max_retries,
-            "trace": []
-        }
-        final_state = graph.invoke(initial_state)
-        return final_state.get("generation", ""), final_state.get("trace", [])
-
-    # Deterministic fallback loop if StateGraph is unavailable
-    route = route_query(question, model_name=model_embedding)
-    if route == "general_chat":
-        return ollama_llm(question, "", model_embedding), ["route:general_chat", "direct_chat"]
-    if route == "codebase_ast":
-        return ollama_llm(question, "Codebase architecture map", model_embedding), ["route:codebase_ast", "codebase_ast"]
-
-    if retriever is None:
-        return "Error: Retriever is not initialized.", ["route:vector_search", "no_retriever"]
-
-    retries = 0
-    search_q = question
-    trace = [f"route:{route}"]
-
-    while retries <= max_retries:
-        if hasattr(retriever, "retrieve_and_rerank"):
-            docs = retriever.retrieve_and_rerank(search_q, retrieve_limit=50, rerank_top_k=10)
-        elif hasattr(retriever, "invoke"):
-            docs = [{"id": i, "text": d.page_content, "score": 1.0} for i, d in enumerate(retriever.invoke(search_q))]
-        else:
-            return "Error: Unsupported retriever interface.", trace
-
-        trace.append(f"retrieve:{len(docs)}")
-        is_relevant, relevant_docs = grade_documents(question, docs, model_name=model_embedding)
-        trace.append(f"grade:{is_relevant}")
-
-        if is_relevant:
-            formatted_content = "\n\n".join(d.get("text", "") for d in relevant_docs if d.get("text"))
-            ans = ollama_llm(question, formatted_content, model_embedding)
-            trace.append("generate")
-            return ans, trace
-
-        retries += 1
-        if retries <= max_retries:
-            search_q = rewrite_query(question, model_name=model_embedding)
-            trace.append(f"rewrite:{retries}")
-
-    trace.append("fallback_exhausted")
-    return "I could not find sufficient relevant context in the provided documents to answer your question accurately.", trace
+    import sys
+    this_mod = sys.modules[__name__]
+    return _core_run_crag_agent(
+        question=question,
+        retriever=retriever,
+        model_embedding=model_embedding,
+        max_retries=max_retries,
+        grader_fn=getattr(this_mod, "grade_documents", None),
+        rewriter_fn=getattr(this_mod, "rewrite_query", None),
+        router_fn=getattr(this_mod, "route_query", None),
+        llm_fn=getattr(this_mod, "ollama_llm", None),
+    )
 
 
 def rag_chain(question, text_splitter, retriever, model_embedding):
     """
     CRAG pipeline entrypoint preserving polymorphic caller contracts.
     """
-    generation, _ = run_crag_agent(question, retriever, model_embedding, max_retries=2)
-    return generation
+    import sys
+    this_mod = sys.modules[__name__]
+    return _core_rag_chain(
+        question,
+        text_splitter,
+        retriever,
+        model_embedding,
+        llm_fn=getattr(this_mod, "ollama_llm", None),
+    )
 
 
 
@@ -663,13 +481,6 @@ def process_ingestion(
     processed_count = 0
     successful_sources: set = set()
     temp_files_to_clean = []
-    import tempfile as _tempfile
-    temp_dir = os.path.abspath(_tempfile.gettempdir())
-
-    def _is_gradio_artifact(path_str: str) -> bool:
-        norm = os.path.abspath(path_str)
-        parts = [p.lower() for p in Path(norm).parts]
-        return ("gradio" in parts or ".gradio" in parts) and (norm.startswith(temp_dir) or ".gradio" in parts)
 
     try:
         from scripts.ingestion_core import QdrantIndexer, generate_deterministic_chunk_id
@@ -690,7 +501,7 @@ def process_ingestion(
             base_prog = i * file_weight
             file_fraction_end = (i + 1) * file_weight
 
-            if _is_gradio_artifact(file_path):
+            if is_gradio_artifact(file_path):
                 temp_files_to_clean.append(os.path.abspath(file_path))
 
             try:
@@ -891,118 +702,16 @@ def get_infra_banner() -> str:
 def create_ui():
     """
     Constructs decoupled industrial-grade Gradio Blocks interface.
-    Segregates Ingestion Zone (ETL) from Chat Zone (CRAG Querying)
-    to prevent WebSocket timeout and eliminate hidden state.
+    Delegates presentation to ui.gradio_ui while injecting composition root handlers.
     """
-    if gr is None:
-        raise ImportError("Gradio is not installed.")
-
-    with gr.Blocks(title="Industrial-Grade Zero-VRAM RAG System") as demo:
-        gr.Markdown("# 🛡️ Industrial-Grade Zero-VRAM RAG System")
-        gr.Markdown("Enterprise Self-Correcting CRAG engine powered by Qwen-2.5, Qdrant & Zero-VRAM FastEmbed.")
-
-        # ── Pre-flight Infrastructure Banner ──────────────────────────────────
-        # Initialized empty; populated reactively by demo.load → get_infra_banner().
-        # Renders a red block if Qdrant is unreachable, invisible otherwise.
-        infra_banner = gr.HTML(value="")
-
-        # ── DB Status Bar ──────────────────────────────────────────────────────
-        with gr.Row():
-            db_status = gr.Textbox(
-                value="Checking...",
-                label="📊 Vector Database Status",
-                interactive=False,
-                scale=4
-            )
-            clear_db_btn = gr.Button("🗑️ Clear Vector DB", variant="stop", scale=1)
-
-        with gr.Row():
-            # Ingestion Zone (ETL Pipeline)
-            with gr.Column(scale=1):
-                gr.Markdown("### 📂 Ingestion Zone (ETL Pipeline)")
-                pdf_input = gr.Files(
-                    label="Upload PDF file(s)",
-                    file_types=[".pdf"]
-                )
-                chunk_size_slider = gr.Slider(
-                    minimum=100,
-                    maximum=2000,
-                    value=500,
-                    step=50,
-                    label="chunk size"
-                )
-                chunk_overlap_slider = gr.Slider(
-                    minimum=0,
-                    maximum=500,
-                    value=100,
-                    step=10,
-                    label="chunk overlap"
-                )
-                reset_vectorstore_chk = gr.Checkbox(
-                    value=False,
-                    label="reset vector store",
-                    info="Wipe existing embeddings before ingesting new documents"
-                )
-                ingest_btn = gr.Button("⚙️ Create Vectors & Ingest", variant="secondary")
-                ingest_status = gr.Textbox(
-                    label="Ingestion Status",
-                    lines=3,
-                    interactive=False
-                )
-
-            # Chat Zone (CRAG Query Engine)
-            with gr.Column(scale=2):
-                gr.Markdown("### 💬 Chat Zone (CRAG Query Engine)")
-                question_input = gr.Textbox(
-                    label="Ask a question",
-                    placeholder="Enter your question here...",
-                    lines=3
-                )
-                with gr.Row():
-                    submit_btn = gr.Button("Submit Query", variant="primary")
-                    clear_btn = gr.Button("Clear")
-                output_box = gr.Textbox(
-                    label="Response",
-                    lines=10,
-                    interactive=False
-                )
-
-        # ── Event Handlers: Segregated Pipelines ───────────────────────────────
-        # Both loads fire async on page load — no blocking at startup
-        demo.load(fn=get_db_status, inputs=[], outputs=db_status)
-        demo.load(fn=get_infra_banner, inputs=[], outputs=infra_banner)
-
-        clear_db_btn.click(fn=clear_db, inputs=[], outputs=db_status)
-
-        ingest_btn.click(
-            fn=process_ingestion,
-            inputs=[
-                pdf_input,
-                chunk_size_slider,
-                chunk_overlap_slider,
-                reset_vectorstore_chk
-            ],
-            outputs=[ingest_status, db_status]
-        )
-
-        submit_btn.click(
-            fn=process_query,
-            inputs=[question_input],
-            outputs=output_box
-        )
-        question_input.submit(
-            fn=process_query,
-            inputs=[question_input],
-            outputs=output_box
-        )
-        clear_btn.click(
-            fn=lambda: (None, "", "", ""),
-            inputs=[],
-            outputs=[pdf_input, ingest_status, question_input, output_box]
-        )
-
-    demo.queue()
-    return demo
+    from ui.gradio_ui import create_ui as _build_ui
+    return _build_ui(
+        query_fn=process_query,
+        ingest_fn=process_ingestion,
+        db_status_fn=get_db_status,
+        clear_db_fn=clear_db,
+        banner_fn=get_infra_banner
+    )
 
 
 def main():
