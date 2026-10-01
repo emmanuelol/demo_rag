@@ -4,17 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.10](https://img.shields.io/badge/Python-3.10-green.svg)](https://www.python.org/)
 [![Docker: Compose](https://img.shields.io/badge/Docker-Compose_v2-2496ED.svg)](docker-compose.yaml)
-[![Powered by: yani-engine](https://img.shields.io/badge/Powered%20by-yani--engine-orange.svg)](#)
+[![Powered by: yani-engine](https://img.shields.io/badge/Powered%20by-yani--engine-orange.svg)](https://github.com/emmanuelol/yani-engine)
 
-> **🟢 Open to Senior AI/ML & Backend Engineering Roles.** [LinkedIn](https://www.linkedin.com) | [Portfolio](https://github.com/emmanuelol)
-
-> *"An industrial-grade, self-correcting RAG system engineered to run on consumer hardware (RTX 4060) with cloud-bursting capabilities, reducing compute costs while maintaining enterprise-grade accuracy."*
-
-### ⚡ Executive TL;DR for Hiring Managers & Tech Leads
-* 💰 **Cost-Saving Compute Optimization:** Zero-VRAM bleed isolates generative inference to consumer GPUs (RTX 4060) while vector storage, dense embeddings, and reranking run on CPU/RAM, eliminating multi-thousand-dollar cloud GPU instances for internal workloads.
-* 🛡️ **Self-Correcting Reliability (CRAG):** LangGraph cyclic state machine grades document relevance and autonomously rewrites ambiguous queries before generation to eliminate hallucinations.
-* 🏗️ **Governed by SOLID Principles:** Decoupled composition root (`run_rag.py`), protocol-driven abstractions (`scripts/protocols.py`), factory-pattern extensibility (`scripts/factory.py`), and isolated UI (`ui/gradio_ui.py`).
-* 🔄 **Production & CI/CD Ready:** Fully containerized with Docker Compose; automated quality gate in GitHub Actions enforcing Answer Relevance ≥ 0.85 via deterministic offline scoring matrix.
+An industrial-grade, self-correcting **Corrective RAG (CRAG)** microservice graph powered by [**yani-engine**](https://github.com/emmanuelol/yani-engine), engineered for deterministic reliability in constrained bare-metal environments (local **RTX 4060 8GB VRAM** and **Ryzen 7 32GB RAM**) with seamless cloud bursting to **Google Cloud Platform (Vertex AI)**.
 
 ---
 
@@ -117,7 +109,7 @@ This repository strictly applies SOLID software engineering principles to ensure
 
 ## 📊 Deterministic Lexical Evaluation Matrix (Offline Proxy)
 
-The pipeline is audited via a **Deterministic Lexical Evaluation Matrix (Offline Proxy)** powered by **yani-engine** against a Golden Dataset. This suite intentionally uses mathematical token-overlap heuristics rather than a live LLM-as-a-judge API to provide 100% deterministic, zero-cost, and air-gapped CI/CD verification:
+The pipeline is audited via a **Deterministic Lexical Evaluation Matrix (Offline Proxy)** powered by [**yani-engine**](https://github.com/emmanuelol/yani-engine) against a Golden Dataset. This suite intentionally uses mathematical token-overlap heuristics rather than a live LLM-as-a-judge API to provide 100% deterministic, zero-cost, and air-gapped CI/CD verification:
 
 ```text
 ==============================================================================
